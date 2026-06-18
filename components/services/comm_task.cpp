@@ -1037,6 +1037,13 @@ void commTask(void* pvParameters) {
                     msg.event = EVENT_DISARM_CMD;
                     xQueueSend(xEventQueue, &msg, 0);
                     ESP_LOGI(TAG, "[CMD] DISARM remoto recibido");
+                } else if (strncmp(serverCmd, "CMD|ALERT", 9) == 0) {
+                    // Sirena manual remota — misma semántica que BLE 0x03.
+                    // EVENT_TRIGGER_ALERT_CMD → STATE_ALERT + buzzer continuo (alertIsHard=true).
+                    // No requiere sistema armado: sirve para ubicar moto o ahuyentar sospechoso.
+                    msg.event = EVENT_TRIGGER_ALERT_CMD;
+                    xQueueSend(xEventQueue, &msg, 0);
+                    ESP_LOGW(TAG, "[CMD] ALERT remoto → sirena activada");
                 } else if (strncmp(serverCmd, "CMD|PURSUIT_CONFIRM", 19) == 0) {
                     msg.event = EVENT_PURSUIT_CONFIRM;
                     xQueueSend(xEventQueue, &msg, 0);
