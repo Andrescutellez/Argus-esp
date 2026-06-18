@@ -266,7 +266,7 @@ static bool alertIsHard = false;
 
 // Corte de motor preventivo activo — independiente del estado de la state machine.
 // Se activa con EVENT_ENGINE_CUT_SILENT o al entrar a STATE_PURSUIT.
-// Se limpia al DISARM (!systemArmed en STATE_IDLE) o antes de EVENT_ENGINE_RESTORE.
+// Se limpia con EVENT_ENGINE_RESTORE (llamada directa al relé + flag).
 static bool s_motorManualCut = false;
 
 // ─── Secuenciador de beep de confirmación ARM/DISARM ─────────────────────────
@@ -492,9 +492,16 @@ void controlTask(void* pvParameters) {
                 ESP_LOGI(TAG, "[MOTOR] Corte preventivo activado (estado: %s)",
                          StateMachine::stateName(stateMachine.getState()));
             } else {
-                // Para EVENT_ENGINE_RESTORE: limpiar flag ANTES de applyStateEffects
-                // para que STATE_IDLE restaure el motor (setEngineCut(s_motorManualCut=false)).
-                if (msg.event == EVENT_ENGINE_RESTORE) s_motorManualCut = false;
+                if (msg.event == EVENT_ENGINE_RESTORE) {
+                    // Restaurar relé directamente sin importar el estado actual.
+                    // Antes solo limpiábamos el flag y esperábamos que applyStateEffects
+                    // lo propagara, pero si el estado no cambia (STATE_IDLE+RESTORE),
+                    // processEvent retorna false → applyStateEffects nunca se llama → relé queda cortado.
+                    s_motorManualCut = false;
+                    MosfetControl::setEngineCut(false);
+                    ESP_LOGI(TAG, "[MOTOR] Motor restaurado directamente (estado: %s)",
+                             StateMachine::stateName(stateMachine.getState()));
+                }
 
                 prevState = stateMachine.getState();
                 bool changed = stateMachine.processEvent(msg);
