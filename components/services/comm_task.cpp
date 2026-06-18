@@ -101,6 +101,7 @@
 #include "system_flags.h"
 #include "state_machine.h"
 #include "a7670_driver.h"
+#include "sensor_task.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
@@ -149,6 +150,16 @@ static const uint64_t INACTIVITY_TIMEOUT_US = 5ULL * 60000000ULL;
  * y desgaste de flash (NVS wear leveling, pero las escrituras frecuentes lo reducen).
  */
 static const uint64_t NVS_SAVE_INTERVAL_US  = 5ULL * 60000000ULL;
+
+/**
+ * Intervalo entre keepalives cuando la telemetría está pausada por inactividad.
+ * 5 minutos: el servidor tiene INACTIVITY_TIMEOUT_MS = 600,000 ms (10 min),
+ * así que un keepalive cada 5 min mantiene el socket abierto con margen.
+ * Reduce los paquetes 4G de ~120/h a ~12/h mientras la moto está quieta.
+ * Los comandos (ARM/DISARM) siguen llegando en ~1s vía URC del modem,
+ * independientemente de este intervalo.
+ */
+static const uint64_t KEEPALIVE_INTERVAL_US = 5ULL * 60000000ULL;
 
 /**
  * Secreto compartido para la firma CRC32 del protocolo Argus.
@@ -792,9 +803,10 @@ void commTask(void* pvParameters) {
     }
 
     // Restar el intervalo para enviar inmediatamente en el primer ciclo.
-    uint64_t lastSendTime  = esp_timer_get_time() - getActiveTelemetryIntervalUs();
-    uint64_t lastNvsSave   = esp_timer_get_time();
-    bool     telemetriaPausada = false;
+    uint64_t lastSendTime       = esp_timer_get_time() - getActiveTelemetryIntervalUs();
+    uint64_t lastNvsSave        = esp_timer_get_time();
+    uint64_t lastKeepaliveSent  = 0; // 0 → primer keepalive se envía al entrar en pausa
+    bool     telemetriaPausada  = false;
 
     // Inicializar tracking de estado al valor ACTUAL antes de arrancar el loop.
     // Esto evita que el primer tick del loop interprete el estado de boot como
@@ -973,18 +985,26 @@ void commTask(void* pvParameters) {
                 // Sistema inactivo >5min en IDLE: pausar telemetría activa.
                 if (!telemetriaPausada) {
                     ESP_LOGW(TAG, "Inactivo >5min en IDLE — telemetría pausada");
-                    telemetriaPausada = true;
+                    telemetriaPausada  = true;
+                    // Forzar primer keepalive inmediato al entrar en pausa,
+                    // para que el servidor sepa que el dispositivo está quieto.
+                    lastKeepaliveSent  = now - KEEPALIVE_INTERVAL_US;
                 }
 
-                // Keepalive mínimo: solo si la cola está vacía y hay posición conocida.
-                // Evita enviar frames vacíos si no hay coords disponibles.
-                if (eventQueue.isEmpty() && hasEverHadFix) {
-                    // Keepalive en sleep: speed=0 porque el GPS está pausado (moto quieta).
+                // Keepalive cada 5 minutos — mantiene el socket TCP abierto sin
+                // gastar datos innecesarios. El servidor tiene timeout de 10 min,
+                // así que un paquete cada 5 min es suficiente margen.
+                // Los comandos (ARM/DISARM) llegan en ~1s vía URC del modem,
+                // independientemente de este intervalo.
+                if (eventQueue.isEmpty() && hasEverHadFix &&
+                    (now - lastKeepaliveSent >= KEEPALIVE_INTERVAL_US)) {
                     buildArgusPacket(tcpPacket, sizeof(tcpPacket),
                                      (double)lastKnownGps.latitude,
                                      (double)lastKnownGps.longitude,
                                      0, 0.0f);
                     syncManager.submitHeartbeat(tcpPacket, now);
+                    lastKeepaliveSent = now;
+                    ESP_LOGI(TAG, "Keepalive enviado (próximo en 5 min)");
                 }
 
                 if (!a7670.isAlive()) {
@@ -1038,6 +1058,21 @@ void commTask(void* pvParameters) {
                     msg.event = EVENT_ENGINE_RESTORE;
                     xQueueSend(xEventQueue, &msg, 0);
                     ESP_LOGI(TAG, "[CMD] ENGINE_RESTORE → motor liberado (sistema sigue armado)");
+                } else if (strncmp(serverCmd, "CMD|SENSITIVITY_VERY_LOW", 24) == 0) {
+                    setSensitivityLevel(SENSITIVITY_VERY_LOW);
+                    ESP_LOGI(TAG, "[CMD] Sensibilidad → VERY_LOW");
+                } else if (strncmp(serverCmd, "CMD|SENSITIVITY_LOW", 19) == 0) {
+                    setSensitivityLevel(SENSITIVITY_LOW);
+                    ESP_LOGI(TAG, "[CMD] Sensibilidad → LOW");
+                } else if (strncmp(serverCmd, "CMD|SENSITIVITY_MEDIUM", 22) == 0) {
+                    setSensitivityLevel(SENSITIVITY_MEDIUM);
+                    ESP_LOGI(TAG, "[CMD] Sensibilidad → MEDIUM");
+                } else if (strncmp(serverCmd, "CMD|SENSITIVITY_HIGH", 20) == 0) {
+                    setSensitivityLevel(SENSITIVITY_HIGH);
+                    ESP_LOGI(TAG, "[CMD] Sensibilidad → HIGH");
+                } else if (strncmp(serverCmd, "CMD|SENSITIVITY_VERY_HIGH", 25) == 0) {
+                    setSensitivityLevel(SENSITIVITY_VERY_HIGH);
+                    ESP_LOGI(TAG, "[CMD] Sensibilidad → VERY_HIGH");
                 } else if (strcmp(serverCmd, "ACK") == 0) {
                     // El backend confirma recepción del paquete GPS. No requiere acción.
                 } else if (strcmp(serverCmd, "ERR") == 0) {

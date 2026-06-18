@@ -118,7 +118,7 @@ struct SensThresholds {
 static const SensThresholds SENSITIVITY_TABLE[5] = {
     { 0.25f, 0.70f, 15.0f, 60.0f },  // [0] VERY_LOW: moto en tráfico, muchos falsos positivos si más sensible
     { 0.15f, 0.50f, 10.0f, 40.0f },  // [1] LOW: zona semi-urbana, movimiento claro requerido
-    { 0.05f, 0.30f,  3.0f, 20.0f },  // [2] MEDIUM: DEFAULT — balance entre FP y detección
+    { 0.08f, 0.30f,  3.0f, 20.0f },  // [2] MEDIUM: DEFAULT — 0.08g evita falsos positivos por bias del MPU6050 (az≈0.95g en reposo = 0.05g de desviación constante)
     { 0.02f, 0.15f,  1.0f, 10.0f },  // [3] HIGH: zona tranquila, detecta vibración leve
     { 0.01f, 0.08f,  0.5f,  5.0f },  // [4] VERY_HIGH: cualquier micro-movimiento
 };

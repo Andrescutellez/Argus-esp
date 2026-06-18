@@ -236,6 +236,16 @@ bool StateMachine::handleIdle(const EventMessage_t& msg) {
             transitionTo(STATE_ALERT);
             return true;
 
+        case EVENT_PURSUIT_CONFIRM:
+            // Corte de motor manual enviado por el propietario desde la app.
+            // Se acepta en IDLE porque el propietario puede querer bloquear la moto
+            // preventivamente, sin esperar a que haya alarma activa.
+            // El auto-corte automático está controlado en la app (solo se llama
+            // cuando hay STATE_ALERT), así que este path solo ocurre por acción manual.
+            ESP_LOGE(TAG, "Corte de motor manual en IDLE → activando PURSUIT");
+            transitionTo(STATE_PURSUIT);
+            return true;
+
         default:
             // Todos los demás eventos (GPS, timers, COMMS_*) se ignoran en IDLE
             return false;
@@ -308,6 +318,14 @@ bool StateMachine::handleMoving(const EventMessage_t& msg) {
             remoteAlert = true;
             xEventGroupSetBits(xSystemFlags, FLAG_REMOTE_ALERT);
             transitionTo(STATE_ALERT);
+            return true;
+
+        case EVENT_PURSUIT_CONFIRM:
+            // Corte de motor manual mientras el sistema ya estaba evaluando movimiento.
+            // El propietario vio el aviso de movimiento y decidió cortar el motor
+            // sin esperar a que escale a ALERT. Transición directa a PURSUIT.
+            ESP_LOGE(TAG, "Corte de motor manual en MOVING → activando PURSUIT");
+            transitionTo(STATE_PURSUIT);
             return true;
 
         default:

@@ -38,13 +38,15 @@
  *   0x01 → EVENT_ARM_CMD              → controlTask arma el sistema
  *   0x02 → EVENT_DISARM_CMD           → controlTask desarma el sistema
  *   0x03 → EVENT_TRIGGER_ALERT_CMD    → controlTask activa alerta manual
+ *   0x04 → EVENT_PURSUIT_CONFIRM      → corte de motor (STATE_PURSUIT) — todos los planes
+ *   0x05 → EVENT_ENGINE_RESTORE       → restaurar motor (STATE_IDLE) — todos los planes
  *   0x10 → setSensitivityLevel(VERY_LOW)   → sensorTask actualiza umbrales
  *   0x11 → setSensitivityLevel(LOW)
  *   0x12 → setSensitivityLevel(MEDIUM)     (default de fábrica)
  *   0x13 → setSensitivityLevel(HIGH)
  *   0x14 → setSensitivityLevel(VERY_HIGH)
  *
- *   Los comandos 0x01-0x03 van a xEventQueue (procesados por controlTask).
+ *   Los comandos 0x01-0x05 van a xEventQueue (procesados por controlTask).
  *   Los comandos 0x10-0x14 actúan directamente sobre motionSensitivity y NVS
  *   (sin pasar por xEventQueue — el efecto es inmediato en sensorTask).
  *
@@ -120,6 +122,8 @@ TaskHandle_t xBleTaskHandle = nullptr;
 #define BLE_CMD_ARM                       0x01  // Armar el sistema (activar vigilancia)
 #define BLE_CMD_DISARM                    0x02  // Desarmar el sistema (desactivar vigilancia)
 #define BLE_CMD_TRIGGER_ALERT             0x03  // Disparar alerta manual de emergencia
+#define BLE_CMD_ENGINE_CUT                0x04  // Cortar motor → STATE_PURSUIT (todos los planes)
+#define BLE_CMD_ENGINE_RESTORE            0x05  // Restaurar motor → STATE_IDLE  (todos los planes)
 #define BLE_CMD_SENSITIVITY_VERY_LOW      0x10  // 5 niveles de sensibilidad MPU6050
 #define BLE_CMD_SENSITIVITY_LOW           0x11  // (ver sensor_task.h para umbrales)
 #define BLE_CMD_SENSITIVITY_MEDIUM        0x12  // default de fábrica
@@ -342,6 +346,19 @@ static int cmdCharAccessCallback(uint16_t connHandle, uint16_t attrHandle,
         case BLE_CMD_TRIGGER_ALERT:
             eventMsg.event = EVENT_TRIGGER_ALERT_CMD;
             ESP_LOGW(TAG, "Comando BLE: TRIGGER_ALERT");
+            break;
+
+        case BLE_CMD_ENGINE_CUT:
+            // Corte de motor disponible para todos los planes — funciona sin conexión 4G.
+            // El estado STATE_PURSUIT se sincroniza al backend cuando el dispositivo reconecta:
+            // comm_task detecta curState != prevSysState y envía EVENT|STATE_PURSUIT.
+            eventMsg.event = EVENT_PURSUIT_CONFIRM;
+            ESP_LOGE(TAG, "Comando BLE: ENGINE_CUT → PURSUIT");
+            break;
+
+        case BLE_CMD_ENGINE_RESTORE:
+            eventMsg.event = EVENT_ENGINE_RESTORE;
+            ESP_LOGI(TAG, "Comando BLE: ENGINE_RESTORE → motor liberado");
             break;
 
         // ── Comandos de sensibilidad (0x10-0x14) ─────────────────────────────
