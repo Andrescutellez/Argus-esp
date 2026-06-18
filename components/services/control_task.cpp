@@ -344,10 +344,9 @@ static void applyStateEffects(SystemState_t newState, SystemState_t prevState,
 
         case STATE_IDLE:
             MosfetControl::setBuzzer(false);
-            // Al desarmar: limpiar flag y restaurar motor.
-            // Al transicionar armado→IDLE (ENGINE_RESTORE, ALERT_TIMEOUT): el flag ya
-            // fue limpiado en el event loop antes de entrar aquí.
-            if (!systemArmed) s_motorManualCut = false;
+            // NO limpiar s_motorManualCut aquí: el app controla cuándo restaurar el motor
+            // vía CMD|ENGINE_RESTORE. Si limpiáramos en DISARM, el motor se restauraría
+            // aunque el usuario tuviera "restaurar al desarmar" desactivado.
             MosfetControl::setEngineCut(s_motorManualCut);
             stopMovingTimer();
             stopAlertTimer();
