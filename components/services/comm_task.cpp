@@ -1042,15 +1042,12 @@ void commTask(void* pvParameters) {
                     xQueueSend(xEventQueue, &msg, 0);
                     ESP_LOGI(TAG, "[CMD] PURSUIT_CONFIRM remoto recibido");
                 } else if (strncmp(serverCmd, "CMD|ENGINE_CUT", 14) == 0) {
-                    // ENGINE_CUT es el comando de corte de motor enviado desde la app
-                    // o la web de usuario/operador. Se mapea a EVENT_PURSUIT_CONFIRM
-                    // porque en la máquina de estados el corte de motor solo ocurre
-                    // en STATE_PURSUIT (applyStateEffects → setEngineCut(true)).
-                    // El nombre del evento en el firmware es "PURSUIT_CONFIRM" porque
-                    // el corte de motor implica confirmar que es un robo activo.
-                    msg.event = EVENT_PURSUIT_CONFIRM;
+                    // ENGINE_CUT es preventivo/silencioso: corta el relé sin cambiar estado
+                    // ni activar sirena. s_motorManualCut persiste a través de transiciones.
+                    // Para robo confirmado con sirena, usar CMD|PURSUIT_CONFIRM.
+                    msg.event = EVENT_ENGINE_CUT_SILENT;
                     xQueueSend(xEventQueue, &msg, 0);
-                    ESP_LOGE(TAG, "[CMD] ENGINE_CUT remoto → PURSUIT_CONFIRM (corte de motor)");
+                    ESP_LOGI(TAG, "[CMD] ENGINE_CUT remoto → corte preventivo silencioso");
                 } else if (strncmp(serverCmd, "CMD|ENGINE_RESTORE", 18) == 0) {
                     // ENGINE_RESTORE restaura el motor sin desarmar el sistema.
                     // STATE_PURSUIT + EVENT_ENGINE_RESTORE → STATE_IDLE (armed).

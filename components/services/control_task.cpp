@@ -264,6 +264,11 @@ static void stopAlertTimer() {
  */
 static bool alertIsHard = false;
 
+// Corte de motor preventivo activo — independiente del estado de la state machine.
+// Se activa con EVENT_ENGINE_CUT_SILENT o al entrar a STATE_PURSUIT.
+// Se limpia al DISARM (!systemArmed en STATE_IDLE) o antes de EVENT_ENGINE_RESTORE.
+static bool s_motorManualCut = false;
+
 // ─── Secuenciador de beep de confirmación ARM/DISARM ─────────────────────────
 //
 // Cuando el usuario arma o desarma, el sistema emite 1 ó 2 beeps cortos como
@@ -339,7 +344,11 @@ static void applyStateEffects(SystemState_t newState, SystemState_t prevState,
 
         case STATE_IDLE:
             MosfetControl::setBuzzer(false);
-            MosfetControl::setEngineCut(false);
+            // Al desarmar: limpiar flag y restaurar motor.
+            // Al transicionar armado→IDLE (ENGINE_RESTORE, ALERT_TIMEOUT): el flag ya
+            // fue limpiado en el event loop antes de entrar aquí.
+            if (!systemArmed) s_motorManualCut = false;
+            MosfetControl::setEngineCut(s_motorManualCut);
             stopMovingTimer();
             stopAlertTimer();
             alertIsHard = false;
@@ -354,7 +363,7 @@ static void applyStateEffects(SystemState_t newState, SystemState_t prevState,
 
         case STATE_MOVING:
             MosfetControl::setBuzzer(false);
-            MosfetControl::setEngineCut(false);
+            MosfetControl::setEngineCut(s_motorManualCut);  // conservar corte preventivo si activo
             stopAlertTimer();  // Por si venimos de ALERT (raro pero posible con DISARM+rearm)
             startMovingTimer();
             // Sin FLAG_HIGH_FREQ_MODE todavía: aún no es alerta confirmada.
@@ -363,7 +372,7 @@ static void applyStateEffects(SystemState_t newState, SystemState_t prevState,
             break;
 
         case STATE_ALERT:
-            MosfetControl::setEngineCut(false);  // Motor NO cortado: puede ser falsa alarma
+            MosfetControl::setEngineCut(s_motorManualCut);  // respetar corte preventivo si activo
             stopMovingTimer();
             if (prevState != STATE_ALERT) {
                 // Solo iniciar el timer de 30s si es una transición nueva a ALERT.
@@ -392,6 +401,7 @@ static void applyStateEffects(SystemState_t newState, SystemState_t prevState,
         case STATE_PURSUIT:
             MosfetControl::setBuzzer(true);
             MosfetControl::setEngineCut(true);  // CORTE DE MOTOR — acción crítica e irreversible hasta DISARM
+            s_motorManualCut = true;             // sincronizar flag: PURSUIT implica motor siempre cortado
             stopMovingTimer();
             stopAlertTimer();
             alertIsHard = true;  // Para que el tick no interfiera con el buzzer
@@ -473,52 +483,67 @@ void controlTask(void* pvParameters) {
         BaseType_t received = xQueueReceive(xEventQueue, &msg, QUEUE_TIMEOUT);
 
         if (received == pdTRUE) {
-            prevState = stateMachine.getState();
-            bool changed = stateMachine.processEvent(msg);
+            // ── Corte preventivo de motor (bypass de la state machine) ─────────────
+            // EVENT_ENGINE_CUT_SILENT corta el relé sin cambiar estado ni activar
+            // sirena — es preventivo. El flag s_motorManualCut persiste a través de
+            // todas las transiciones hasta EVENT_ENGINE_RESTORE o DISARM.
+            if (msg.event == EVENT_ENGINE_CUT_SILENT) {
+                s_motorManualCut = true;
+                MosfetControl::setEngineCut(true);
+                ESP_LOGI(TAG, "[MOTOR] Corte preventivo activado (estado: %s)",
+                         StateMachine::stateName(stateMachine.getState()));
+            } else {
+                // Para EVENT_ENGINE_RESTORE: limpiar flag ANTES de applyStateEffects
+                // para que STATE_IDLE restaure el motor (setEngineCut(s_motorManualCut=false)).
+                if (msg.event == EVENT_ENGINE_RESTORE) s_motorManualCut = false;
 
-            if (changed) {
-                SystemState_t newState = stateMachine.getState();
+                prevState = stateMachine.getState();
+                bool changed = stateMachine.processEvent(msg);
 
-                // Log solo cuando el estado cambió realmente (no cuando changed=true
-                // por reinicio de timer en MOVING+SOFT que no cambia el estado).
-                if (newState != prevState) {
-                    ESP_LOGI(TAG, "Estado: %s → %s  [%s]",
-                             StateMachine::stateName(prevState),
-                             StateMachine::stateName(newState),
-                             StateMachine::modeName(StateMachine::currentMode()));
+                if (changed) {
+                    SystemState_t newState = stateMachine.getState();
+
+                    // Log solo cuando el estado cambió realmente (no cuando changed=true
+                    // por reinicio de timer en MOVING+SOFT que no cambia el estado).
+                    if (newState != prevState) {
+                        ESP_LOGI(TAG, "Estado: %s → %s  [%s]",
+                                 StateMachine::stateName(prevState),
+                                 StateMachine::stateName(newState),
+                                 StateMachine::modeName(StateMachine::currentMode()));
+                    }
+
+                    applyStateEffects(newState, prevState, msg);
+
+                    // Notificar estado ARM/DISARM a la app via BLE.
+                    if (msg.event == EVENT_ARM_CMD || msg.event == EVENT_DISARM_CMD) {
+                        bleNotifyState(systemArmed);
+
+                        // Confirmación auditiva: 1 beep al armar, 2 beeps al desarmar.
+                        // Dispara la secuencia; el tick de 250ms la ejecuta paso a paso.
+                        // No bloqueante: el loop principal continúa sin delay.
+                        beepStep = 0;
+                        beepMax  = (msg.event == EVENT_ARM_CMD) ? 2U : 4U;
+                        ESP_LOGI(TAG, "Beep ARM/DISARM: %u steps programados", beepMax);
+                    }
                 }
 
-                applyStateEffects(newState, prevState, msg);
-
-                // Notificar estado ARM/DISARM a la app via BLE.
-                if (msg.event == EVENT_ARM_CMD || msg.event == EVENT_DISARM_CMD) {
-                    bleNotifyState(systemArmed);
-
-                    // Confirmación auditiva: 1 beep al armar, 2 beeps al desarmar.
-                    // Dispara la secuencia; el tick de 250ms la ejecuta paso a paso.
-                    // No bloqueante: el loop principal continúa sin delay.
-                    beepStep = 0;
-                    beepMax  = (msg.event == EVENT_ARM_CMD) ? 2U : 4U;
-                    ESP_LOGI(TAG, "Beep ARM/DISARM: %u steps programados", beepMax);
+                // Reiniciar timer de MOVING cuando llega movimiento suave adicional.
+                // La StateMachine ya retornó changed=true y NO transicionó (seguimos en MOVING).
+                // Esto extiende la ventana de observación de 15s con cada movimiento suave.
+                if (stateMachine.getState() == STATE_MOVING &&
+                    msg.event == EVENT_MOVEMENT_SOFT) {
+                    startMovingTimer();
                 }
-            }
 
-            // Reiniciar timer de MOVING cuando llega movimiento suave adicional.
-            // La StateMachine ya retornó changed=true y NO transicionó (seguimos en MOVING).
-            // Esto extiende la ventana de observación de 15s con cada movimiento suave.
-            if (stateMachine.getState() == STATE_MOVING &&
-                msg.event == EVENT_MOVEMENT_SOFT) {
-                startMovingTimer();
-            }
-
-            // Reiniciar timer de ALERT cuando llega movimiento en ALERT.
-            // Previene que la alerta expire mientras la moto sigue en movimiento.
-            // La alerta solo expira si hay 30s consecutivos SIN ningún movimiento.
-            if (stateMachine.getState() == STATE_ALERT &&
-                (msg.event == EVENT_MOVEMENT_SOFT ||
-                 msg.event == EVENT_MOVEMENT_HARD ||
-                 msg.event == EVENT_IMPACT_DETECTED)) {
-                startAlertTimer();
+                // Reiniciar timer de ALERT cuando llega movimiento en ALERT.
+                // Previene que la alerta expire mientras la moto sigue en movimiento.
+                // La alerta solo expira si hay 30s consecutivos SIN ningún movimiento.
+                if (stateMachine.getState() == STATE_ALERT &&
+                    (msg.event == EVENT_MOVEMENT_SOFT ||
+                     msg.event == EVENT_MOVEMENT_HARD ||
+                     msg.event == EVENT_IMPACT_DETECTED)) {
+                    startAlertTimer();
+                }
             }
         }
 

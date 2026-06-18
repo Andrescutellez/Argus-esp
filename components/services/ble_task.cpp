@@ -38,7 +38,7 @@
  *   0x01 → EVENT_ARM_CMD              → controlTask arma el sistema
  *   0x02 → EVENT_DISARM_CMD           → controlTask desarma el sistema
  *   0x03 → EVENT_TRIGGER_ALERT_CMD    → controlTask activa alerta manual
- *   0x04 → EVENT_PURSUIT_CONFIRM      → corte de motor (STATE_PURSUIT) — todos los planes
+ *   0x04 → EVENT_ENGINE_CUT_SILENT    → corte preventivo silencioso (sin sirena) — todos los planes
  *   0x05 → EVENT_ENGINE_RESTORE       → restaurar motor (STATE_IDLE) — todos los planes
  *   0x10 → setSensitivityLevel(VERY_LOW)   → sensorTask actualiza umbrales
  *   0x11 → setSensitivityLevel(LOW)
@@ -349,11 +349,11 @@ static int cmdCharAccessCallback(uint16_t connHandle, uint16_t attrHandle,
             break;
 
         case BLE_CMD_ENGINE_CUT:
-            // Corte de motor disponible para todos los planes — funciona sin conexión 4G.
-            // El estado STATE_PURSUIT se sincroniza al backend cuando el dispositivo reconecta:
-            // comm_task detecta curState != prevSysState y envía EVENT|STATE_PURSUIT.
-            eventMsg.event = EVENT_PURSUIT_CONFIRM;
-            ESP_LOGE(TAG, "Comando BLE: ENGINE_CUT → PURSUIT");
+            // Corte preventivo silencioso — no activa sirena ni cambia estado.
+            // El motor queda bloqueado hasta ENGINE_RESTORE o DISARM.
+            // s_motorManualCut en control_task persiste a través de transiciones de estado.
+            eventMsg.event = EVENT_ENGINE_CUT_SILENT;
+            ESP_LOGI(TAG, "Comando BLE: ENGINE_CUT → corte preventivo (sin sirena)");
             break;
 
         case BLE_CMD_ENGINE_RESTORE:

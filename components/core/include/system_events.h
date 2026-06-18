@@ -192,9 +192,9 @@ typedef enum {
     // Permite activar la alarma sin necesitar movimiento físico real.
     EVENT_TRIGGER_ALERT_CMD,
 
-    // Usuario/operador confirmó robo → activar STATE_PURSUIT.
+    // Usuario/operador confirmó robo → activar STATE_PURSUIT + sirena.
     // NEVER se genera automáticamente: requiere confirmación explícita humana.
-    // Generado por: comm_task al recibir CMD|ENGINE_CUT o CMD|PURSUIT_CONFIRM.
+    // Generado por: comm_task al recibir CMD|PURSUIT_CONFIRM.
     EVENT_PURSUIT_CONFIRM,
 
     // Operador restaura el motor sin desarmar el sistema.
@@ -202,6 +202,14 @@ typedef enum {
     // Generado por: comm_task al recibir CMD|ENGINE_RESTORE.
     // Solo válido en STATE_PURSUIT. En otros estados es ignorado.
     EVENT_ENGINE_RESTORE,
+
+    // Corte de motor preventivo/silencioso — no cambia estado ni activa sirena.
+    // El motor queda bloqueado hasta recibir EVENT_ENGINE_RESTORE o EVENT_DISARM_CMD.
+    // El flag s_motorManualCut en control_task persiste a través de todas las
+    // transiciones de estado hasta que el usuario desarme o restaure explícitamente.
+    // Generado por: comm_task (CMD|ENGINE_CUT vía TCP) o ble_task (byte 0x04).
+    // Manejado directamente en control_task, fuera de la state machine.
+    EVENT_ENGINE_CUT_SILENT,
 
     // ── Timers de estado ─────────────────────────────────────────────────────
 
