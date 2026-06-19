@@ -491,6 +491,18 @@ void controlTask(void* pvParameters) {
                 MosfetControl::setEngineCut(true);
                 ESP_LOGI(TAG, "[MOTOR] Corte preventivo activado (estado: %s)",
                          StateMachine::stateName(stateMachine.getState()));
+
+            // ── Sirena manual (bypass de la state machine) ───────────────────────
+            // Solo enciende/apaga el buzzer sin afectar estado, timers ni motorCut.
+            // Uso: localizar la moto a distancia (bocina de búsqueda).
+            } else if (msg.event == EVENT_SIREN_ON) {
+                MosfetControl::setBuzzer(true);
+                ESP_LOGI(TAG, "[SIREN] Sirena manual ON (estado: %s)",
+                         StateMachine::stateName(stateMachine.getState()));
+            } else if (msg.event == EVENT_SIREN_OFF) {
+                MosfetControl::setBuzzer(false);
+                ESP_LOGI(TAG, "[SIREN] Sirena manual OFF (estado: %s)",
+                         StateMachine::stateName(stateMachine.getState()));
             } else {
                 if (msg.event == EVENT_ENGINE_RESTORE) {
                     // Restaurar relé directamente sin importar el estado actual.

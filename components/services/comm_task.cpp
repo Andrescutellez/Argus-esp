@@ -1037,13 +1037,18 @@ void commTask(void* pvParameters) {
                     msg.event = EVENT_DISARM_CMD;
                     xQueueSend(xEventQueue, &msg, 0);
                     ESP_LOGI(TAG, "[CMD] DISARM remoto recibido");
-                } else if (strncmp(serverCmd, "CMD|ALERT", 9) == 0) {
-                    // Sirena manual remota — misma semántica que BLE 0x03.
-                    // EVENT_TRIGGER_ALERT_CMD → STATE_ALERT + buzzer continuo (alertIsHard=true).
-                    // No requiere sistema armado: sirve para ubicar moto o ahuyentar sospechoso.
-                    msg.event = EVENT_TRIGGER_ALERT_CMD;
+                } else if (strncmp(serverCmd, "CMD|SIREN_ON", 12) == 0) {
+                    // Prende el buzzer directamente, SIN cambiar la máquina de estados.
+                    // Uso: bocina de búsqueda para localizar la moto a distancia.
+                    // No activa STATE_ALERT, no inicia timers, no afecta motorCut.
+                    msg.event = EVENT_SIREN_ON;
                     xQueueSend(xEventQueue, &msg, 0);
-                    ESP_LOGW(TAG, "[CMD] ALERT remoto → sirena activada");
+                    ESP_LOGI(TAG, "[CMD] SIREN_ON → buzzer ON (sin cambio de estado)");
+                } else if (strncmp(serverCmd, "CMD|SIREN_OFF", 13) == 0) {
+                    // Apaga el buzzer directamente, SIN cambiar la máquina de estados.
+                    msg.event = EVENT_SIREN_OFF;
+                    xQueueSend(xEventQueue, &msg, 0);
+                    ESP_LOGI(TAG, "[CMD] SIREN_OFF → buzzer OFF (sin cambio de estado)");
                 } else if (strncmp(serverCmd, "CMD|PURSUIT_CONFIRM", 19) == 0) {
                     msg.event = EVENT_PURSUIT_CONFIRM;
                     xQueueSend(xEventQueue, &msg, 0);

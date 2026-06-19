@@ -211,6 +211,20 @@ typedef enum {
     // Manejado directamente en control_task, fuera de la state machine.
     EVENT_ENGINE_CUT_SILENT,
 
+    // Activa el buzzer directamente, SIN cambiar la máquina de estados.
+    // Uso: localizar la moto a distancia (bocina de búsqueda).
+    // No activa STATE_ALERT, no inicia timers, no afecta armed/motorCut.
+    // Generado por: comm_task (CMD|SIREN_ON vía TCP) o ble_task (byte 0x03).
+    // Manejado directamente en control_task, fuera de la state machine.
+    EVENT_SIREN_ON,
+
+    // Apaga el buzzer directamente, SIN cambiar la máquina de estados.
+    // Complemento de EVENT_SIREN_ON. En STATE_ALERT el tick de beeps puede
+    // volver a encenderlo; en STATE_IDLE/MOVING apaga por completo.
+    // Generado por: comm_task (CMD|SIREN_OFF vía TCP) o ble_task (byte 0x06).
+    // Manejado directamente en control_task, fuera de la state machine.
+    EVENT_SIREN_OFF,
+
     // ── Timers de estado ─────────────────────────────────────────────────────
 
     // 30 segundos en STATE_ALERT sin confirmación ni movimiento adicional.

@@ -35,11 +35,12 @@
  *   No se usa para notificaciones (NOTIFY/INDICATE no están implementadas).
  *
  * MAPA DE COMANDOS (byte único):
- *   0x01 → EVENT_ARM_CMD              → controlTask arma el sistema
- *   0x02 → EVENT_DISARM_CMD           → controlTask desarma el sistema
- *   0x03 → EVENT_TRIGGER_ALERT_CMD    → controlTask activa alerta manual
- *   0x04 → EVENT_ENGINE_CUT_SILENT    → corte preventivo silencioso (sin sirena) — todos los planes
- *   0x05 → EVENT_ENGINE_RESTORE       → restaurar motor (STATE_IDLE) — todos los planes
+ *   0x01 → EVENT_ARM_CMD           → controlTask arma el sistema
+ *   0x02 → EVENT_DISARM_CMD        → controlTask desarma el sistema
+ *   0x03 → EVENT_SIREN_ON          → buzzer ON sin cambiar estado (bocina de búsqueda)
+ *   0x04 → EVENT_ENGINE_CUT_SILENT → corte preventivo silencioso (sin sirena) — todos los planes
+ *   0x05 → EVENT_ENGINE_RESTORE    → restaurar motor (STATE_IDLE) — todos los planes
+ *   0x06 → EVENT_SIREN_OFF         → buzzer OFF sin cambiar estado
  *   0x10 → setSensitivityLevel(VERY_LOW)   → sensorTask actualiza umbrales
  *   0x11 → setSensitivityLevel(LOW)
  *   0x12 → setSensitivityLevel(MEDIUM)     (default de fábrica)
@@ -116,14 +117,15 @@ TaskHandle_t xBleTaskHandle = nullptr;
 
 // ─── Comandos BLE aceptados ───────────────────────────────────────────────────
 // Bytes que la app móvil puede enviar a la característica BLE de comandos.
-// Rango 0x01-0x03: eventos de sistema → xEventQueue → controlTask.
+// Rango 0x01-0x06: eventos de sistema → xEventQueue → controlTask.
 // Rango 0x10-0x14: comandos de sensibilidad → setSensitivityLevel() directo.
 
 #define BLE_CMD_ARM                       0x01  // Armar el sistema (activar vigilancia)
 #define BLE_CMD_DISARM                    0x02  // Desarmar el sistema (desactivar vigilancia)
-#define BLE_CMD_TRIGGER_ALERT             0x03  // Disparar alerta manual de emergencia
-#define BLE_CMD_ENGINE_CUT                0x04  // Cortar motor → STATE_PURSUIT (todos los planes)
-#define BLE_CMD_ENGINE_RESTORE            0x05  // Restaurar motor → STATE_IDLE  (todos los planes)
+#define BLE_CMD_SIREN_ON                  0x03  // Bocina de búsqueda: buzzer ON sin cambiar estado
+#define BLE_CMD_ENGINE_CUT                0x04  // Cortar motor preventivo silencioso (todos los planes)
+#define BLE_CMD_ENGINE_RESTORE            0x05  // Restaurar motor (todos los planes)
+#define BLE_CMD_SIREN_OFF                 0x06  // Bocina de búsqueda: buzzer OFF sin cambiar estado
 #define BLE_CMD_SENSITIVITY_VERY_LOW      0x10  // 5 niveles de sensibilidad MPU6050
 #define BLE_CMD_SENSITIVITY_LOW           0x11  // (ver sensor_task.h para umbrales)
 #define BLE_CMD_SENSITIVITY_MEDIUM        0x12  // default de fábrica
@@ -343,9 +345,16 @@ static int cmdCharAccessCallback(uint16_t connHandle, uint16_t attrHandle,
             ESP_LOGI(TAG, "Comando BLE: DISARM");
             break;
 
-        case BLE_CMD_TRIGGER_ALERT:
-            eventMsg.event = EVENT_TRIGGER_ALERT_CMD;
-            ESP_LOGW(TAG, "Comando BLE: TRIGGER_ALERT");
+        case BLE_CMD_SIREN_ON:
+            // Bocina de búsqueda: buzzer ON sin cambiar la máquina de estados.
+            // Útil para localizar la moto a distancia o ahuyentar a alguien.
+            eventMsg.event = EVENT_SIREN_ON;
+            ESP_LOGI(TAG, "Comando BLE: SIREN_ON → buzzer ON (sin cambio de estado)");
+            break;
+
+        case BLE_CMD_SIREN_OFF:
+            eventMsg.event = EVENT_SIREN_OFF;
+            ESP_LOGI(TAG, "Comando BLE: SIREN_OFF → buzzer OFF");
             break;
 
         case BLE_CMD_ENGINE_CUT:
