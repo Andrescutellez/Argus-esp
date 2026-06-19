@@ -650,9 +650,15 @@ private:
      */
     char              waitUrcResult[MODEM_LINE_MAX];
 
-    // ── Comando recibido del servidor via TCP ────────────────────────────────
-    char              _pendingCmd[64];
-    bool              _hasPendingCmd;
+    // ── Cola FIFO de comandos recibidos del servidor via TCP ─────────────────
+    // Hasta 4 comandos simultáneos (suficiente para ARM+ENGINE_CUT llegando juntos).
+    // tryReadServerCommand() extrae TODOS los CMD| del bloque de 128 bytes en una
+    // sola pasada; readLastServerCommand() los entrega de a uno al comm_task.
+    static constexpr uint8_t CMD_QUEUE_SIZE = 4;
+    char              _cmdQueue[CMD_QUEUE_SIZE][64];
+    uint8_t           _cmdQueueHead;   // índice del próximo a leer
+    uint8_t           _cmdQueueCount;  // cantidad de comandos en la cola
+    bool              _hasPendingCmd;  // true si _cmdQueueCount > 0 (alias de conveniencia)
     bool              _tcpConnected;   // true si el socket 0 está abierto y usable
     bool              _hasPendingRx;   // true cuando el A7670 emitió +CIPRXGET: 1,0 (datos entrantes)
 
@@ -766,7 +772,7 @@ private:
     /** Limpia el buffer rxBuf[]. */
     void clearRxBuf();
 
-    /** Lee hasta 64 bytes del socket 0 con AT+CIPRXGET y guarda el comando en _pendingCmd. */
+    /** Lee hasta 128 bytes del socket 0 con AT+CIPRXGET y encola todos los CMD| encontrados en _cmdQueue. */
     void tryReadServerCommand();
 
     /** Agrega una línea al final de rxBuf[] con '\n' separador. */

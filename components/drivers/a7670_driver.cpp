@@ -213,9 +213,12 @@ A7670Driver::A7670Driver()
       parserOverflow(false),
       waitUrcSem(nullptr),
       waitUrcActive(false),
+      _cmdQueueHead(0),
+      _cmdQueueCount(0),
       _hasPendingCmd(false),
       _tcpConnected(false),
       _hasPendingRx(false) {
+    memset(_cmdQueue, 0, sizeof(_cmdQueue));
     memset(rxBuf, 0, sizeof(rxBuf));
     memset(&dispatchSession, 0, sizeof(dispatchSession));
     memset(&urcState, 0, sizeof(urcState));
@@ -229,7 +232,7 @@ A7670Driver::A7670Driver()
     // Cadenas vacías → ningún URC waiter activo en este estado
     waitUrcPrefix[0] = '\0';
     waitUrcResult[0] = '\0';
-    memset(_pendingCmd, 0, sizeof(_pendingCmd));
+    memset(_cmdQueue, 0, sizeof(_cmdQueue));
 }
 
 // ─── Hardware ─────────────────────────────────────────────────────────────────
@@ -1206,7 +1209,7 @@ esp_err_t A7670Driver::tcpSend(const char* packet) {
 void A7670Driver::tryReadServerCommand() {
     vTaskDelay(pdMS_TO_TICKS(200));  // tiempo para que el servidor escriba ACK + CMD
 
-    // Leer hasta 128 bytes: ACK\r\n (5) + CMD|PURSUIT_CONFIRM\n (21) con margen
+    // 128 bytes: suficiente para ACK\r\n + hasta 3 comandos (ARM+ENGINE_CUT+SIREN, ~15B c/u)
     static const char* READ_CMD = "AT+CIPRXGET=2,0,128\r\n";
     clearRxBuf();
     beginDispatch("AT+CIPRXGET=2,0,128", "+CIPRXGET:", false, false, false);
@@ -1216,7 +1219,7 @@ void A7670Driver::tryReadServerCommand() {
 
     if (!gotResp) return;
 
-    // rxBuf = "+CIPRXGET: 2,0,<actual>,<rem>\r\nACK\r\n[CMD|...\r\n]OK\r\n"
+    // rxBuf = "+CIPRXGET: 2,0,<actual>,<rem>\r\nACK\r\n[CMD|...\r\n][CMD|...\r\n]OK\r\n"
     const char* hdr = strstr(rxBuf, "+CIPRXGET: 2,0,");
     if (!hdr) return;
 
@@ -1227,41 +1230,63 @@ void A7670Driver::tryReadServerCommand() {
     if (!nl) return;
     const char* data = nl + 2;
 
-    // Saltar línea ACK o ERR (siempre la primera respuesta del servidor)
+    // Saltar línea ACK o ERR (primera respuesta del servidor, antes de los CMD|)
     if (strncmp(data, "ACK", 3) == 0 || strncmp(data, "ERR", 3) == 0) {
         const char* after = strstr(data, "\r\n");
         if (!after) return;
         data = after + 2;
     }
 
-    // Si quedamos en OK o en fin de buffer, no hay comando
-    if (*data == '\0' || strncmp(data, "OK", 2) == 0) return;
-
-    // Extraer línea de comando (hasta \r\n o \n)
-    const char* end_nl = strstr(data, "\r\n");
-    if (!end_nl) end_nl = strchr(data, '\n');
-    size_t datalen = end_nl ? (size_t)(end_nl - data) : strnlen(data, sizeof(_pendingCmd));
-    if (datalen == 0 || datalen >= sizeof(_pendingCmd)) return;
-
+    // Extraer TODOS los CMD| del bloque leído y encolarlos.
+    // Esto soluciona el caso donde ARM y ENGINE_CUT llegan en el mismo bloque TCP:
+    // el A7670 genera un solo URC +CIPRXGET:1,0 para ambos → antes solo se leía ARM.
     taskENTER_CRITICAL(&dispatchMux);
-    memcpy(_pendingCmd, data, datalen);
-    _pendingCmd[datalen] = '\0';
-    _hasPendingCmd = true;
-    taskEXIT_CRITICAL(&dispatchMux);
+    while (*data != '\0' && strncmp(data, "OK", 2) != 0) {
+        // Solo procesar líneas que empiezan con "CMD|"
+        if (strncmp(data, "CMD|", 4) != 0) {
+            // Saltar línea no reconocida
+            const char* skip = strstr(data, "\r\n");
+            if (!skip) { skip = strchr(data, '\n'); }
+            if (!skip) break;
+            data = skip + (strncmp(skip, "\r\n", 2) == 0 ? 2 : 1);
+            continue;
+        }
 
-    ESP_LOGI(TAG, "[CMD] Backend → '%s'", _pendingCmd);
+        // Delimitar fin de línea (\r\n o \n)
+        const char* end_nl = strstr(data, "\r\n");
+        if (!end_nl) end_nl = strchr(data, '\n');
+        size_t cmdlen = end_nl ? (size_t)(end_nl - data) : strnlen(data, 63);
+        if (cmdlen == 0 || cmdlen >= 64) break;
+
+        // Encolar si hay espacio
+        if (_cmdQueueCount < CMD_QUEUE_SIZE) {
+            uint8_t slot = (_cmdQueueHead + _cmdQueueCount) % CMD_QUEUE_SIZE;
+            memcpy(_cmdQueue[slot], data, cmdlen);
+            _cmdQueue[slot][cmdlen] = '\0';
+            _cmdQueueCount++;
+            _hasPendingCmd = true;
+            ESP_LOGI(TAG, "[CMD] Backend → '%s' (cola: %d)", _cmdQueue[slot], _cmdQueueCount);
+        } else {
+            ESP_LOGW(TAG, "[CMD] Cola llena — descartando comando");
+        }
+
+        if (!end_nl) break;
+        data = end_nl + (strncmp(end_nl, "\r\n", 2) == 0 ? 2 : 1);
+    }
+    taskEXIT_CRITICAL(&dispatchMux);
 }
 
 // ─── readLastServerCommand ────────────────────────────────────────────────────
 
 bool A7670Driver::readLastServerCommand(char* buf, size_t size) {
     taskENTER_CRITICAL(&dispatchMux);
-    bool has = _hasPendingCmd;
+    bool has = (_cmdQueueCount > 0);
     if (has) {
-        strncpy(buf, _pendingCmd, size - 1);
+        strncpy(buf, _cmdQueue[_cmdQueueHead], size - 1);
         buf[size - 1] = '\0';
-        _hasPendingCmd = false;
-        _pendingCmd[0] = '\0';
+        _cmdQueueHead = (_cmdQueueHead + 1) % CMD_QUEUE_SIZE;
+        _cmdQueueCount--;
+        _hasPendingCmd = (_cmdQueueCount > 0);
     }
     taskEXIT_CRITICAL(&dispatchMux);
     return has;
@@ -1283,7 +1308,7 @@ bool A7670Driver::readLastServerCommand(char* buf, size_t size) {
  *   4. Si no lo obtiene (tcpSend activo) → restaurar flag, retornar false.
  *      tryReadServerCommand() se llamará igualmente al final de tcpSend().
  *   5. Verificar que el socket sigue conectado.
- *   6. tryReadServerCommand() → lee AT+CIPRXGET=2,0,128 → llena _pendingCmd.
+ *   6. tryReadServerCommand() → lee AT+CIPRXGET=2,0,128 → encola todos los CMD| en _cmdQueue.
  *
  * @return true si se ejecutó tryReadServerCommand(); false si no había datos o mutex ocupado.
  */
