@@ -1237,43 +1237,52 @@ void A7670Driver::tryReadServerCommand() {
         data = after + 2;
     }
 
-    // Extraer TODOS los CMD| del bloque leído y encolarlos.
+    // Parsear TODOS los CMD| del bloque en variables locales (sin sección crítica aún).
     // Esto soluciona el caso donde ARM y ENGINE_CUT llegan en el mismo bloque TCP:
     // el A7670 genera un solo URC +CIPRXGET:1,0 para ambos → antes solo se leía ARM.
-    taskENTER_CRITICAL(&dispatchMux);
-    while (*data != '\0' && strncmp(data, "OK", 2) != 0) {
-        // Solo procesar líneas que empiezan con "CMD|"
+    char   parsed[CMD_QUEUE_SIZE][64];
+    uint8_t parsedCount = 0;
+
+    while (*data != '\0' && strncmp(data, "OK", 2) != 0 && parsedCount < CMD_QUEUE_SIZE) {
         if (strncmp(data, "CMD|", 4) != 0) {
-            // Saltar línea no reconocida
             const char* skip = strstr(data, "\r\n");
-            if (!skip) { skip = strchr(data, '\n'); }
+            if (!skip) skip = strchr(data, '\n');
             if (!skip) break;
             data = skip + (strncmp(skip, "\r\n", 2) == 0 ? 2 : 1);
             continue;
         }
-
-        // Delimitar fin de línea (\r\n o \n)
         const char* end_nl = strstr(data, "\r\n");
         if (!end_nl) end_nl = strchr(data, '\n');
         size_t cmdlen = end_nl ? (size_t)(end_nl - data) : strnlen(data, 63);
         if (cmdlen == 0 || cmdlen >= 64) break;
 
-        // Encolar si hay espacio
-        if (_cmdQueueCount < CMD_QUEUE_SIZE) {
-            uint8_t slot = (_cmdQueueHead + _cmdQueueCount) % CMD_QUEUE_SIZE;
-            memcpy(_cmdQueue[slot], data, cmdlen);
-            _cmdQueue[slot][cmdlen] = '\0';
-            _cmdQueueCount++;
-            _hasPendingCmd = true;
-            ESP_LOGI(TAG, "[CMD] Backend → '%s' (cola: %d)", _cmdQueue[slot], _cmdQueueCount);
-        } else {
-            ESP_LOGW(TAG, "[CMD] Cola llena — descartando comando");
-        }
+        memcpy(parsed[parsedCount], data, cmdlen);
+        parsed[parsedCount][cmdlen] = '\0';
+        parsedCount++;
 
         if (!end_nl) break;
         data = end_nl + (strncmp(end_nl, "\r\n", 2) == 0 ? 2 : 1);
     }
+
+    // Encolar bajo sección crítica — sin logging aquí (printf dentro de critical = crash)
+    taskENTER_CRITICAL(&dispatchMux);
+    for (uint8_t i = 0; i < parsedCount; i++) {
+        if (_cmdQueueCount < CMD_QUEUE_SIZE) {
+            uint8_t slot = (_cmdQueueHead + _cmdQueueCount) % CMD_QUEUE_SIZE;
+            memcpy(_cmdQueue[slot], parsed[i], 64);
+            _cmdQueueCount++;
+            _hasPendingCmd = true;
+        }
+    }
     taskEXIT_CRITICAL(&dispatchMux);
+
+    // Logging fuera de sección crítica
+    for (uint8_t i = 0; i < parsedCount; i++) {
+        ESP_LOGI(TAG, "[CMD] Backend → '%s'", parsed[i]);
+    }
+    if (parsedCount == 0) {
+        ESP_LOGD(TAG, "[CMD] Bloque TCP sin comandos CMD|");
+    }
 }
 
 // ─── readLastServerCommand ────────────────────────────────────────────────────
