@@ -180,6 +180,15 @@ volatile bool          systemArmed           = false;
 volatile bool          remoteAlert           = false;
 
 /**
+ * @brief Flag: modo geocerca de estacionamiento activo.
+ *
+ * Cuando true, STATE_ALERT suprime el buzzer. Solo el backend puede desactivarlo
+ * (CMD|PARK_MODE_OFF) al detectar que la moto salió de la geocerca, momento en
+ * que la alarma completa se activa. También se limpia con CMD|DISARM.
+ */
+volatile bool          flagParkMode          = false;
+
+/**
  * @brief Estado actual de la máquina de estados del sistema.
  *
  * Valores: STATE_IDLE, STATE_MOVING, STATE_ALERT, STATE_PURSUIT.

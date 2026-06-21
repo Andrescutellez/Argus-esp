@@ -1034,6 +1034,7 @@ void commTask(void* pvParameters) {
                     xQueueSend(xEventQueue, &msg, 0);
                     ESP_LOGI(TAG, "[CMD] ARM remoto recibido");
                 } else if (strncmp(serverCmd, "CMD|DISARM", 10) == 0) {
+                    flagParkMode = false;  // geocerca se cancela al desarmar
                     msg.event = EVENT_DISARM_CMD;
                     xQueueSend(xEventQueue, &msg, 0);
                     ESP_LOGI(TAG, "[CMD] DISARM remoto recibido");
@@ -1067,6 +1068,22 @@ void commTask(void* pvParameters) {
                     msg.event = EVENT_ENGINE_RESTORE;
                     xQueueSend(xEventQueue, &msg, 0);
                     ESP_LOGI(TAG, "[CMD] ENGINE_RESTORE → motor liberado (sistema sigue armado)");
+                } else if (strncmp(serverCmd, "CMD|PARK_MODE_ON", 16) == 0) {
+                    // Activa modo geocerca: STATE_ALERT no dispara buzzer.
+                    // Solo envía eventos al backend para que evalúe salida de zona.
+                    flagParkMode = true;
+                    ESP_LOGI(TAG, "[CMD] PARK_MODE_ON → geocerca de estacionamiento activa");
+                } else if (strncmp(serverCmd, "CMD|PARK_MODE_OFF", 17) == 0) {
+                    // El backend detectó salida de geocerca → activar alarma completa.
+                    // Si estamos en STATE_ALERT, el tick del buzzer se activará en el
+                    // próximo ciclo de control_task ya que flagParkMode=false.
+                    flagParkMode = false;
+                    if (currentSystemState == STATE_ALERT) {
+                        // Disparar SIREN_ON explícitamente para reacción inmediata.
+                        msg.event = EVENT_SIREN_ON;
+                        xQueueSend(xEventQueue, &msg, 0);
+                    }
+                    ESP_LOGW(TAG, "[CMD] PARK_MODE_OFF → moto fuera de geocerca, alarma completa");
                 } else if (strncmp(serverCmd, "CMD|SENSITIVITY_VERY_LOW", 24) == 0) {
                     setSensitivityLevel(SENSITIVITY_VERY_LOW);
                     ESP_LOGI(TAG, "[CMD] Sensibilidad → VERY_LOW");

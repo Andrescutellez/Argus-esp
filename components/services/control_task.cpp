@@ -388,12 +388,19 @@ static void applyStateEffects(SystemState_t newState, SystemState_t prevState,
                            trigger.event == EVENT_IMPACT_DETECTED ||
                            trigger.event == EVENT_TRIGGER_ALERT_CMD);
 
-            if (alertIsHard) {
-                MosfetControl::setBuzzer(true);  // Sirena continua al instante
-                ESP_LOGW(TAG, "ALERT fuerte → sirena continua activada");
+            // En modo geocerca el buzzer queda silencioso: el backend evalúa si la
+            // moto salió de la zona y sólo entonces manda CMD|PARK_MODE_OFF + SIREN_ON.
+            if (!flagParkMode) {
+                if (alertIsHard) {
+                    MosfetControl::setBuzzer(true);
+                    ESP_LOGW(TAG, "ALERT fuerte → sirena continua activada");
+                } else {
+                    MosfetControl::setBuzzer(false);  // tick aplicará patrón de beeps
+                    ESP_LOGW(TAG, "ALERT suave → patrón de beeps activado");
+                }
             } else {
-                MosfetControl::setBuzzer(false);  // El tick de LEDs aplicará el patrón de beeps
-                ESP_LOGW(TAG, "ALERT suave → patrón de beeps activado");
+                MosfetControl::setBuzzer(false);
+                ESP_LOGI(TAG, "ALERT en geocerca → buzzer silenciado, esperando evaluación backend");
             }
             break;
 
@@ -600,7 +607,7 @@ void controlTask(void* pvParameters) {
         // Ticks 0-1 del ciclo: ON. Ticks 2-7: OFF.
         // Si alertIsHard=true, el buzzer ya está ON continuo desde applyStateEffects
         // y esta condición es false — no interferimos con la sirena.
-        if (stateMachine.getState() == STATE_ALERT && !alertIsHard) {
+        if (stateMachine.getState() == STATE_ALERT && !alertIsHard && !flagParkMode) {
             MosfetControl::setBuzzer((ledTick % 8) < 2);
         }
 

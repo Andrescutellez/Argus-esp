@@ -61,6 +61,15 @@ extern volatile bool systemArmed;
 // Escrito por: StateMachine al recibir EVENT_TRIGGER_ALERT_CMD o EVENT_PURSUIT_CONFIRM.
 extern volatile bool remoteAlert;
 
+// true cuando el sistema está en modo geocerca de estacionamiento.
+// Efecto: STATE_ALERT NO activa el buzzer — solo envía EVENT al backend.
+// El backend evalúa si la moto salió de la geocerca y, de ser así, envía CMD|PARK_MODE_OFF
+// que limpia este flag y activa la alarma completa.
+// Se limpia también al recibir CMD|DISARM.
+// Escrito por: commTask (CMD|PARK_MODE_ON / CMD|PARK_MODE_OFF / CMD|DISARM).
+// Leído por: control_task (applyStateEffects + tick de buzzer).
+extern volatile bool flagParkMode;
+
 // Estado actual de la máquina de estados (SystemState_t).
 // Protegido por xStateMutex cuando se lee desde tareas que necesitan consistencia.
 // Escrito por: StateMachine.transitionTo() exclusivamente.
