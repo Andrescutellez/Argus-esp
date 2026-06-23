@@ -217,7 +217,8 @@ A7670Driver::A7670Driver()
       _cmdQueueCount(0),
       _hasPendingCmd(false),
       _tcpConnected(false),
-      _hasPendingRx(false) {
+      _hasPendingRx(false),
+      _lastCmdPollUs(0) {
     memset(_cmdQueue, 0, sizeof(_cmdQueue));
     memset(rxBuf, 0, sizeof(rxBuf));
     memset(&dispatchSession, 0, sizeof(dispatchSession));
@@ -1225,6 +1226,14 @@ void A7670Driver::tryReadServerCommand() {
 
     int actual = 0, rem = 0;
     if (sscanf(hdr, "+CIPRXGET: 2,0,%d,%d", &actual, &rem) != 2 || actual <= 0) return;
+    // Si quedan bytes en el buffer del modem (rem>0), re-armar el flag para que
+    // pollForCommands() los lea en el próximo tick. El A7670 no siempre genera un
+    // URC adicional cuando hay datos pendientes tras una lectura parcial.
+    if (rem > 0) {
+        taskENTER_CRITICAL(&dispatchMux);
+        _hasPendingRx = true;
+        taskEXIT_CRITICAL(&dispatchMux);
+    }
 
     const char* nl = strstr(hdr, "\r\n");
     if (!nl) return;
@@ -1322,22 +1331,33 @@ bool A7670Driver::readLastServerCommand(char* buf, size_t size) {
  * @return true si se ejecutó tryReadServerCommand(); false si no había datos o mutex ocupado.
  */
 bool A7670Driver::pollForCommands() {
-    // Paso 1: lectura rápida del flag bajo spinlock
+    // Paso 1: leer _hasPendingRx y evaluar force-poll bajo un solo spinlock.
+    // Force-poll cada 5s cuando el socket está conectado: el A7670 (documentado SIMCom)
+    // solo genera +CIPRXGET:1,0 cuando llegan datos a un buffer VACÍO. Si el buffer ya tenía
+    // datos de lectura parcial (rem>0 ignorado), o si el modem dejó de emitir URCs tras
+    // las primeras lecturas por sesión, los comandos quedan atrapados en el buffer del modem.
+    // El force-poll garantiza que el buffer se drena aunque el URC nunca llegue.
     taskENTER_CRITICAL(&dispatchMux);
     bool hasPending = _hasPendingRx;
     if (hasPending) _hasPendingRx = false;
+    const uint64_t nowUs  = esp_timer_get_time();
+    const bool forceCheck = !hasPending && _tcpConnected &&
+                            (nowUs - _lastCmdPollUs) >= 5000000ULL;
+    if (forceCheck) _lastCmdPollUs = nowUs;
     taskEXIT_CRITICAL(&dispatchMux);
 
-    if (!hasPending) return false;
+    if (!hasPending && !forceCheck) return false;
 
-    // Paso 2: intentar tomar el mutex sin bloquear demasiado
+    // Paso 2: intentar tomar el mutex sin bloquear demasiado.
     // Si tcpSend() lo tiene, tryReadServerCommand() ya correrá al final de ese envío.
     ModemLockGuard lock(xModemMutex, pdMS_TO_TICKS(200));
     if (!lock.locked()) {
-        // Restaurar flag para que commTask lo intente en el próximo tick (1s)
-        taskENTER_CRITICAL(&dispatchMux);
-        _hasPendingRx = true;
-        taskEXIT_CRITICAL(&dispatchMux);
+        // Restaurar solo si era URC real (el force-poll se reintenta al próximo tick)
+        if (hasPending) {
+            taskENTER_CRITICAL(&dispatchMux);
+            _hasPendingRx = true;
+            taskEXIT_CRITICAL(&dispatchMux);
+        }
         return false;
     }
 
@@ -1349,7 +1369,11 @@ bool A7670Driver::pollForCommands() {
     if (!connected) return false;
 
     // Paso 4: leer datos del buffer del A7670 y parsear el comando
-    ESP_LOGI(TAG, "[pollForCommands] URC recibido — leyendo datos del servidor");
+    if (hasPending) {
+        ESP_LOGI(TAG, "[pollForCommands] URC recibido — leyendo datos del servidor");
+    } else {
+        ESP_LOGD(TAG, "[pollForCommands] Force-poll 5s — verificando buffer TCP");
+    }
     tryReadServerCommand();
     return true;
 }

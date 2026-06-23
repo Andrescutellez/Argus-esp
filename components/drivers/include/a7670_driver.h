@@ -661,6 +661,7 @@ private:
     bool              _hasPendingCmd;  // true si _cmdQueueCount > 0 (alias de conveniencia)
     bool              _tcpConnected;   // true si el socket 0 está abierto y usable
     bool              _hasPendingRx;   // true cuando el A7670 emitió +CIPRXGET: 1,0 (datos entrantes)
+    uint64_t          _lastCmdPollUs;  // timestamp del último read forzado (µs); para force-poll cada 5s
 
     // ── Métodos privados de hardware y boot ───────────────────────────────────
 
