@@ -189,6 +189,17 @@ volatile bool          remoteAlert           = false;
 volatile bool          flagParkMode          = false;
 
 /**
+ * @brief Flag: corte de motor diferido pendiente de ejecución.
+ *
+ * Se activa cuando comm_task recibe CMD|ENGINE_CUT mientras la moto está en
+ * movimiento (lastHardMovementTimestamp reciente). control_task ejecuta el corte
+ * real en el próximo tick (250ms) donde detecte ≥3s sin HARD/IMPACT.
+ * Razón del diferimiento: cortar el motor en movimiento puede causar un accidente
+ * mortal — la moto pierde freno motor y el ladrón puede perder el control.
+ */
+volatile bool          flagEngineCutPending  = false;
+
+/**
  * @brief Estado actual de la máquina de estados del sistema.
  *
  * Valores: STATE_IDLE, STATE_MOVING, STATE_ALERT, STATE_PURSUIT.

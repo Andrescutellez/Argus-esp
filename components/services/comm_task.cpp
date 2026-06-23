@@ -1055,12 +1055,23 @@ void commTask(void* pvParameters) {
                     xQueueSend(xEventQueue, &msg, 0);
                     ESP_LOGI(TAG, "[CMD] PURSUIT_CONFIRM remoto recibido");
                 } else if (strncmp(serverCmd, "CMD|ENGINE_CUT", 14) == 0) {
-                    // ENGINE_CUT es preventivo/silencioso: corta el relé sin cambiar estado
-                    // ni activar sirena. s_motorManualCut persiste a través de transiciones.
-                    // Para robo confirmado con sirena, usar CMD|PURSUIT_CONFIRM.
-                    msg.event = EVENT_ENGINE_CUT_SILENT;
-                    xQueueSend(xEventQueue, &msg, 0);
-                    ESP_LOGI(TAG, "[CMD] ENGINE_CUT remoto → corte preventivo silencioso");
+                    // Corte diferido: si la moto está en movimiento → esperar quietud.
+                    // Criterio de quietud: sin evento DURO (HARD/IMPACT) por ≥3s.
+                    // Si ya está quieta → corte inmediato vía EVENT_ENGINE_CUT_SILENT.
+                    // Razón del diferimiento: cortar el motor en movimiento puede causar
+                    // accidente mortal — la moto pierde tracción y freno motor.
+                    {
+                        const uint64_t nowUs  = esp_timer_get_time();
+                        const bool     quieta = (nowUs - lastHardMovementTimestamp) >= 3000000ULL;
+                        if (quieta) {
+                            msg.event = EVENT_ENGINE_CUT_SILENT;
+                            xQueueSend(xEventQueue, &msg, 0);
+                            ESP_LOGI(TAG, "[CMD] ENGINE_CUT → moto quieta ≥3s, corte inmediato");
+                        } else {
+                            flagEngineCutPending = true;
+                            ESP_LOGW(TAG, "[CMD] ENGINE_CUT → moto en movimiento, corte DIFERIDO hasta quietud (≥3s sin HARD/IMPACT)");
+                        }
+                    }
                 } else if (strncmp(serverCmd, "CMD|ENGINE_RESTORE", 18) == 0) {
                     // ENGINE_RESTORE restaura el motor sin desarmar el sistema.
                     // STATE_PURSUIT + EVENT_ENGINE_RESTORE → STATE_IDLE (armed).

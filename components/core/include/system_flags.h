@@ -70,6 +70,15 @@ extern volatile bool remoteAlert;
 // Leído por: control_task (applyStateEffects + tick de buzzer).
 extern volatile bool flagParkMode;
 
+// true cuando se recibió CMD|ENGINE_CUT pero la moto estaba en movimiento.
+// Propósito: evitar cortar el motor mientras la moto rueda (riesgo de accidente mortal).
+// control_task verifica en cada tick (250ms): si (now - lastHardMovementTimestamp) ≥ 3s
+// → ejecuta el corte vía s_motorManualCut + setEngineCut(true) y limpia este flag.
+// Se limpia también al recibir EVENT_ENGINE_RESTORE o EVENT_DISARM_CMD.
+// Escrito por: commTask (CMD|ENGINE_CUT) y controlTask (al ejecutar o al DISARM/RESTORE).
+// Leído por: controlTask en cada tick del loop principal (cada 250ms).
+extern volatile bool flagEngineCutPending;
+
 // Estado actual de la máquina de estados (SystemState_t).
 // Protegido por xStateMutex cuando se lee desde tareas que necesitan consistencia.
 // Escrito por: StateMachine.transitionTo() exclusivamente.

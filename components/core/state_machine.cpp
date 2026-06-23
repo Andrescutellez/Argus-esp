@@ -25,7 +25,9 @@
  *   Usuario pone app: EVENT_ARM_CMD → IDLE (armado, systemArmed=true)
  *   Ladrón toca la moto: EVENT_MOVEMENT_SOFT → MOVING (timer 15s inicia)
  *   Ladrón intenta robarla: EVENT_MOVEMENT_HARD → ALERT (buzzer, timer 30s)
- *   Operador confirma: EVENT_PURSUIT_CONFIRM → PURSUIT (motor cortado, GPS continuo)
+ *   Operador confirma: EVENT_PURSUIT_CONFIRM → PURSUIT (GPS continuo, 10s)
+ *     ↳ Sin sirena automática: CMD|SIREN_ON explícito (evita alertar al ladrón → tira GPS)
+ *     ↳ Sin corte de motor automático: CMD|ENGINE_CUT diferido hasta quietud (evita accidente)
  *   Moto recuperada: EVENT_DISARM_CMD → IDLE (desarmado, motor libre)
  *
  * VARIABLES CRÍTICAS:
@@ -410,9 +412,10 @@ bool StateMachine::handleAlert(const EventMessage_t& msg) {
  * @brief Procesa eventos durante la persecución activa.
  *
  * PROPÓSITO:
- *   Gestionar el estado de máxima prioridad. En PURSUIT, el motor está cortado
- *   y la telemetría corre a 10s de intervalo. Solo un DISARM_CMD explícito
- *   puede salir de este estado.
+ *   Gestionar el estado de máxima prioridad. En PURSUIT, la telemetría GPS corre
+ *   a 10s de intervalo (máxima frecuencia). La sirena y el corte de motor son
+ *   comandos EXPLÍCITOS — no se activan automáticamente al entrar en PURSUIT.
+ *   Solo un DISARM_CMD explícito puede salir de este estado.
  *
  * DISEÑO — IGNORAR TODO EXCEPTO DISARM:
  *   En PURSUIT ignoramos todos los eventos excepto DISARM_CMD. Razón:
@@ -523,8 +526,17 @@ void StateMachine::transitionTo(SystemState_t newState) {
      ALERT_TIMEOUT → IDLE (armado, falsa alarma)
 
    handlePursuit(event):
-     DISARM_CMD → IDLE desarmado
-     todo lo demás → ignorar
+     DISARM_CMD      → IDLE desarmado
+     ENGINE_RESTORE  → IDLE (motor libre, sigue armado)
+     todo lo demás  → ignorar
+
+   NOTA DE DISEÑO PURSUIT:
+     La sirena y el corte de motor NO se activan automáticamente al entrar en
+     PURSUIT (a diferencia de versiones anteriores). control_task.cpp tampoco
+     los activa en applyStateEffects(STATE_PURSUIT). Razones:
+     - Sirena automática: alerta al ladrón → puede tirar el GPS antes de ser encontrado.
+     - Corte de motor automático en movimiento: riesgo de accidente mortal.
+     → Usar CMD|SIREN_ON y CMD|ENGINE_CUT (diferido) de forma explícita.
 
    VARIABLES ESCRITAS:
    - currentState (local): estado de la instancia de StateMachine

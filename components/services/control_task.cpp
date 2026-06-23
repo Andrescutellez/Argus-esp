@@ -30,10 +30,12 @@
  *   MOVING     | SÍ     | OFF              | ON     | Parpadeo rápido | movingTimer (15s)
  *   ALERT soft | SÍ     | 2 beeps cada 2s  | ON     | Alternado       | alertTimer (30s)
  *   ALERT hard | SÍ     | Sirena continua  | ON     | Alternado       | alertTimer (30s)
- *   PURSUIT    | SÍ     | ON continuo      | CORTADO| Sirena          | Todos detenidos
+ *   PURSUIT    | SÍ     | sin cambio*      | sin cambio*| Sirena      | Todos detenidos
  *
- *   NOTA: En ALERT el motor NO se corta. Puede ser una falsa alarma. Solo en PURSUIT
- *   se corta el motor definitivamente (confirmación humana requerida para llegar ahí).
+ *   * En PURSUIT el motor y la sirena NO se activan automáticamente.
+ *     Motor: CMD|ENGINE_CUT diferido hasta quietud (evita accidente si rueda).
+ *     Sirena: CMD|SIREN_ON explícito (evita alertar al ladrón → tira el GPS).
+ *   En ALERT el motor NO se corta (puede ser falsa alarma).
  *
  * BUZZER EN ALERT:
  *   alertIsHard=false: patrón de beeps — 2 ticks ON (500ms) de cada 8 (2s).
@@ -405,19 +407,22 @@ static void applyStateEffects(SystemState_t newState, SystemState_t prevState,
             break;
 
         case STATE_PURSUIT:
-            MosfetControl::setBuzzer(true);
-            MosfetControl::setEngineCut(true);  // CORTE DE MOTOR — acción crítica e irreversible hasta DISARM
-            s_motorManualCut = true;             // sincronizar flag: PURSUIT implica motor siempre cortado
+            // Sin sirena automática: usar CMD|SIREN_ON explícito.
+            // Razón: la sirena puede alertar al ladrón de que fue localizado → tira el GPS.
+            // Sin corte de motor automático: usar CMD|ENGINE_CUT (diferido hasta quietud).
+            // Razón: cortar el motor en movimiento puede causar accidente mortal.
+            // El corte y la sirena deben ser decisiones explícitas del operador/propietario.
+            MosfetControl::setEngineCut(s_motorManualCut);  // conservar corte si ya estaba activo
             stopMovingTimer();
             stopAlertTimer();
-            alertIsHard = true;  // Para que el tick no interfiera con el buzzer
+            alertIsHard = true;  // Para que el tick de beeps no interfiera si hay sirena manual
             // Activar todos los flags de máxima urgencia:
             // FLAG_SYSTEM_ARMED: el sistema sigue armado.
             // FLAG_REMOTE_ALERT: commTask envía con máxima prioridad.
             // FLAG_HIGH_FREQ_MODE: telemetría cada 10s.
             xEventGroupSetBits(xSystemFlags,
                                FLAG_SYSTEM_ARMED | FLAG_REMOTE_ALERT | FLAG_HIGH_FREQ_MODE);
-            ESP_LOGE(TAG, "Efectos PURSUIT aplicados — CORTE DE MOTOR ACTIVO");
+            ESP_LOGE(TAG, "Efectos PURSUIT aplicados — GPS 10s activo (motor/sirena: comando explícito)");
             break;
     }
 }
@@ -516,10 +521,17 @@ void controlTask(void* pvParameters) {
                     // Antes solo limpiábamos el flag y esperábamos que applyStateEffects
                     // lo propagara, pero si el estado no cambia (STATE_IDLE+RESTORE),
                     // processEvent retorna false → applyStateEffects nunca se llama → relé queda cortado.
-                    s_motorManualCut = false;
+                    s_motorManualCut     = false;
+                    flagEngineCutPending = false;  // cancelar cualquier corte diferido pendiente
                     MosfetControl::setEngineCut(false);
-                    ESP_LOGI(TAG, "[MOTOR] Motor restaurado directamente (estado: %s)",
+                    ESP_LOGI(TAG, "[MOTOR] Motor restaurado — corte diferido cancelado (estado: %s)",
                              StateMachine::stateName(stateMachine.getState()));
+                }
+
+                // DISARM cancela cualquier corte diferido pendiente (BLE o TCP).
+                // Para TCP DISARM también lo limpia commTask, pero cubrimos BLE aquí.
+                if (msg.event == EVENT_DISARM_CMD) {
+                    flagEngineCutPending = false;
                 }
 
                 prevState = stateMachine.getState();
@@ -594,6 +606,22 @@ void controlTask(void* pvParameters) {
                     ESP_LOGI(TAG, "[AUTO-ARM] Armando por inactividad (>%lus quieto)",
                              (unsigned long)(autoArmDelayMs / 1000UL));
                 }
+            }
+        }
+
+        // ── Corte diferido de motor (verificar en cada tick de 250ms) ────────────
+        // Si flagEngineCutPending=true, el backend envió CMD|ENGINE_CUT mientras la
+        // moto estaba en movimiento. Ejecutar el corte cuando lleve ≥3s quieta:
+        // sin ningún evento DURO (HARD/IMPACT) en ese tiempo.
+        // Tiempo de reacción al detenerse: ≤250ms (granularidad del tick).
+        if (flagEngineCutPending) {
+            const uint64_t nowUs = esp_timer_get_time();
+            if ((nowUs - lastHardMovementTimestamp) >= 3000000ULL) {
+                flagEngineCutPending = false;
+                s_motorManualCut     = true;
+                MosfetControl::setEngineCut(true);
+                ESP_LOGW(TAG, "[MOTOR] Corte diferido ejecutado — moto quieta ≥3s sin HARD/IMPACT (estado: %s)",
+                         StateMachine::stateName(stateMachine.getState()));
             }
         }
 
