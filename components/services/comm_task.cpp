@@ -1056,20 +1056,23 @@ void commTask(void* pvParameters) {
                     ESP_LOGI(TAG, "[CMD] PURSUIT_CONFIRM remoto recibido");
                 } else if (strncmp(serverCmd, "CMD|ENGINE_CUT", 14) == 0) {
                     // Corte diferido: si la moto está en movimiento → esperar quietud.
-                    // Criterio de quietud: sin evento DURO (HARD/IMPACT) por ≥3s.
+                    // Criterio de quietud inmediata: sin HARD/IMPACT en ≥5s
+                    // (alineado con el filtro de ticks en control_task — CUT_QUIET_TICKS×250ms).
                     // Si ya está quieta → corte inmediato vía EVENT_ENGINE_CUT_SILENT.
+                    // Si no → flagEngineCutPending=true; control_task ejecuta cuando
+                    // pasen 5s consecutivos sin HARD/IMPACT en cola (filtra ruido MPU).
                     // Razón del diferimiento: cortar el motor en movimiento puede causar
                     // accidente mortal — la moto pierde tracción y freno motor.
                     {
                         const uint64_t nowUs  = esp_timer_get_time();
-                        const bool     quieta = (nowUs - lastHardMovementTimestamp) >= 3000000ULL;
+                        const bool     quieta = (nowUs - lastHardMovementTimestamp) >= 5000000ULL;
                         if (quieta) {
                             msg.event = EVENT_ENGINE_CUT_SILENT;
                             xQueueSend(xEventQueue, &msg, 0);
-                            ESP_LOGI(TAG, "[CMD] ENGINE_CUT → moto quieta ≥3s, corte inmediato");
+                            ESP_LOGI(TAG, "[CMD] ENGINE_CUT → moto quieta ≥5s, corte inmediato");
                         } else {
                             flagEngineCutPending = true;
-                            ESP_LOGW(TAG, "[CMD] ENGINE_CUT → moto en movimiento, corte DIFERIDO hasta quietud (≥3s sin HARD/IMPACT)");
+                            ESP_LOGW(TAG, "[CMD] ENGINE_CUT → moto activa, corte DIFERIDO (filtro 5s sin HARD/IMPACT en cola)");
                         }
                     }
                 } else if (strncmp(serverCmd, "CMD|ENGINE_RESTORE", 18) == 0) {

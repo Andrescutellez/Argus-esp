@@ -271,6 +271,15 @@ static bool alertIsHard = false;
 // Se limpia con EVENT_ENGINE_RESTORE (llamada directa al relé + flag).
 static bool s_motorManualCut = false;
 
+// Filtro de quietud para corte diferido:
+// El MPU6050 siempre genera micro-vibraciones en reposo — un solo evento HARD no
+// indica movimiento real. Se cuentan ticks consecutivos (250ms) SIN que llegue
+// EVENT_MOVEMENT_HARD ni EVENT_IMPACT_DETECTED a la cola. Al alcanzar
+// CUT_QUIET_TICKS sin interrupción, la moto se considera efectivamente quieta
+// y se ejecuta el corte. Cualquier HARD/IMPACT reinicia el contador.
+static uint32_t      s_cutQuietTicks   = 0;
+static const uint32_t CUT_QUIET_TICKS  = 20;  // 20 × 250ms = 5 s
+
 // ─── Secuenciador de beep de confirmación ARM/DISARM ─────────────────────────
 //
 // Cuando el usuario arma o desarma, el sistema emite 1 ó 2 beeps cortos como
@@ -516,6 +525,14 @@ void controlTask(void* pvParameters) {
                 ESP_LOGI(TAG, "[SIREN] Sirena manual OFF (estado: %s)",
                          StateMachine::stateName(stateMachine.getState()));
             } else {
+                // Filtro de quietud: resetear contador si llega HARD/IMPACT mientras
+                // hay un corte diferido pendiente. Un solo evento no corta el conteo —
+                // el contador simplemente vuelve a 0 y empieza de nuevo.
+                if (flagEngineCutPending &&
+                    (msg.event == EVENT_MOVEMENT_HARD || msg.event == EVENT_IMPACT_DETECTED)) {
+                    s_cutQuietTicks = 0;
+                }
+
                 if (msg.event == EVENT_ENGINE_RESTORE) {
                     // Restaurar relé directamente sin importar el estado actual.
                     // Antes solo limpiábamos el flag y esperábamos que applyStateEffects
@@ -609,20 +626,24 @@ void controlTask(void* pvParameters) {
             }
         }
 
-        // ── Corte diferido de motor (verificar en cada tick de 250ms) ────────────
-        // Si flagEngineCutPending=true, el backend envió CMD|ENGINE_CUT mientras la
-        // moto estaba en movimiento. Ejecutar el corte cuando lleve ≥3s quieta:
-        // sin ningún evento DURO (HARD/IMPACT) en ese tiempo.
-        // Tiempo de reacción al detenerse: ≤250ms (granularidad del tick).
+        // ── Corte diferido de motor (filtrado por ticks consecutivos) ────────────
+        // No usa lastHardMovementTimestamp: un solo evento esporádico lo resetearía
+        // y el MPU6050 siempre tiene ruido ambiental en reposo.
+        // En su lugar cuenta CUT_QUIET_TICKS ticks consecutivos (~5s) sin que llegue
+        // EVENT_MOVEMENT_HARD ni EVENT_IMPACT_DETECTED. El `else` limpia el contador
+        // cuando ya no hay corte pendiente (ENGINE_RESTORE / DISARM).
         if (flagEngineCutPending) {
-            const uint64_t nowUs = esp_timer_get_time();
-            if ((nowUs - lastHardMovementTimestamp) >= 3000000ULL) {
+            s_cutQuietTicks++;
+            if (s_cutQuietTicks >= CUT_QUIET_TICKS) {
+                s_cutQuietTicks      = 0;
                 flagEngineCutPending = false;
                 s_motorManualCut     = true;
                 MosfetControl::setEngineCut(true);
-                ESP_LOGW(TAG, "[MOTOR] Corte diferido ejecutado — moto quieta ≥3s sin HARD/IMPACT (estado: %s)",
+                ESP_LOGW(TAG, "[MOTOR] Corte diferido ejecutado — 5s sin HARD/IMPACT en cola (estado: %s)",
                          StateMachine::stateName(stateMachine.getState()));
             }
+        } else {
+            s_cutQuietTicks = 0;
         }
 
         // ── Tick de LEDs (siempre, cada 250ms) ───────────────────────────────────
