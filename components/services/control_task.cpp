@@ -278,7 +278,7 @@ static bool s_motorManualCut = false;
 // CUT_QUIET_TICKS sin interrupción, la moto se considera efectivamente quieta
 // y se ejecuta el corte. Cualquier HARD/IMPACT reinicia el contador.
 static uint32_t      s_cutQuietTicks   = 0;
-static const uint32_t CUT_QUIET_TICKS  = 20;  // 20 × 250ms = 5 s
+static const uint32_t CUT_QUIET_TICKS  = 12;  // 12 × 250ms = 3 s
 
 // ─── Secuenciador de beep de confirmación ARM/DISARM ─────────────────────────
 //
@@ -639,7 +639,7 @@ void controlTask(void* pvParameters) {
                 flagEngineCutPending = false;
                 s_motorManualCut     = true;
                 MosfetControl::setEngineCut(true);
-                ESP_LOGW(TAG, "[MOTOR] Corte diferido ejecutado — 5s sin HARD/IMPACT en cola (estado: %s)",
+                ESP_LOGW(TAG, "[MOTOR] Corte diferido ejecutado — 3s sin HARD/IMPACT en cola (estado: %s)",
                          StateMachine::stateName(stateMachine.getState()));
             }
         } else {

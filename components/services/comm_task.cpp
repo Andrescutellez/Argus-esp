@@ -1065,14 +1065,14 @@ void commTask(void* pvParameters) {
                     // accidente mortal — la moto pierde tracción y freno motor.
                     {
                         const uint64_t nowUs  = esp_timer_get_time();
-                        const bool     quieta = (nowUs - lastHardMovementTimestamp) >= 5000000ULL;
+                        const bool     quieta = (nowUs - lastHardMovementTimestamp) >= 3000000ULL;
                         if (quieta) {
                             msg.event = EVENT_ENGINE_CUT_SILENT;
                             xQueueSend(xEventQueue, &msg, 0);
-                            ESP_LOGI(TAG, "[CMD] ENGINE_CUT → moto quieta ≥5s, corte inmediato");
+                            ESP_LOGI(TAG, "[CMD] ENGINE_CUT → moto quieta ≥3s, corte inmediato");
                         } else {
                             flagEngineCutPending = true;
-                            ESP_LOGW(TAG, "[CMD] ENGINE_CUT → moto activa, corte DIFERIDO (filtro 5s sin HARD/IMPACT en cola)");
+                            ESP_LOGW(TAG, "[CMD] ENGINE_CUT → moto activa, corte DIFERIDO (filtro 3s sin HARD/IMPACT en cola)");
                         }
                     }
                 } else if (strncmp(serverCmd, "CMD|ENGINE_RESTORE", 18) == 0) {
