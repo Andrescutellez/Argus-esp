@@ -1003,9 +1003,6 @@ bool A7670Driver::initDataContext() {
 
         if (resetNetStack()) {
             ESP_LOGI(TAG, "Contexto de datos listo (APN=%s)", ARGUS_APN);
-            if (sendATLocked("AT+CNUM", "+CNUM:", A7670_TIMEOUT_SHORT_MS, true)) {
-                ESP_LOGW(TAG, ">>> NUMERO SIM: %s <<<", rxBuf);
-            }
             state = MODEM_STATE_NET_READY;
             return true;
         }

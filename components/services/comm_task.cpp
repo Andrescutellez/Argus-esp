@@ -43,7 +43,7 @@
  * INTERVALOS DE TELEMETRÍA:
  *   STATE_PURSUIT:                 10s  (emergencia — ignora plan)
  *   STATE_ALERT:                   15s  (alerta — ignora plan)
- *   STATE_MOVING / STATE_IDLE:     25s  (PREMIUM) / 3600s (FREEMIUM)
+ *   STATE_MOVING / STATE_IDLE:     30s  (PREMIUM) / 3600s (FREEMIUM)
  *
  * LÓGICA DE INACTIVIDAD (5 minutos en IDLE):
  *   Si el sistema está en IDLE sin movimiento por >5min:
@@ -195,7 +195,7 @@ static bool hasEverHadFix  = false;
  * LÓGICA:
  *   PURSUIT → 10s (emergencia — ignora plan, necesitamos localización continua)
  *   ALERT   → 15s (alerta activa — ignora plan)
- *   MOVING/IDLE + PREMIUM  → 25s (monitoreo activo — < CGNAT Tigo ~30s)
+ *   MOVING/IDLE + PREMIUM  → 30s (monitoreo activo)
  *   MOVING/IDLE + FREEMIUM → 3600s (1h — solo heartbeat, conserva datos del plan)
  *
  * NOTA: Lee currentSystemState directamente sin mutex (ver system_flags.h).
@@ -211,7 +211,7 @@ static uint64_t getActiveTelemetryIntervalUs() {
         case STATE_IDLE:
         default:
             if (planType == PLAN_PREMIUM) {
-                return 25ULL * 1000000ULL;    // 25s — monitoreo PREMIUM (< timeout CGNAT Tigo ~30s)
+                return 30ULL * 1000000ULL;    // 30s — monitoreo normal PREMIUM
             } else {
                 return 3600ULL * 1000000ULL;  // 1h  — FREEMIUM, conservar datos
             }
@@ -443,7 +443,7 @@ static uint64_t resolveReportEpoch(const GpsData_t& gps) {
  *
  * VENTANA:
  *   Las métricas se acumulan desde el último reset (commTask hace memset tras enviar).
- *   Con PREMIUM (GPS cada 25s) la ventana es ~25s.
+ *   Con PREMIUM (GPS cada 30s) la ventana es ~30s.
  *   Con FREEMIUM en ALERT/PURSUIT (GPS cada 15-10s) la ventana puede ser más corta.
  *
  * @param buf      Buffer destino.
@@ -1243,7 +1243,7 @@ void commTask(void* pvParameters) {
    si la conexión falla, con backoff exponencial.
 
    La frecuencia de reporte es adaptativa: en emergencia (persecución) reporta
-   cada 10 segundos. En alerta cada 15s. En modo normal, cada 25s para PREMIUM
+   cada 10 segundos. En alerta cada 15s. En modo normal, cada 30s para PREMIUM
    o cada hora para FREEMIUM. Si el dispositivo está quieto más de 5 minutos,
    pausamos la telemetría GPS activa para ahorrar batería y datos.
 
