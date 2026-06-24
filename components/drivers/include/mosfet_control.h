@@ -12,9 +12,11 @@
  *   led1State, led2State) siempre sea coherente con el estado físico del pin.
  *
  * HARDWARE CONTROLADO:
- *   - GPIO33 → MOSFET de buzzer/alarma sonora: activa un buzzer piezoeléctrico
- *     o bocina. Nivel alto = ON. En ALERT y PURSUIT, control_task lo hace
- *     parpadear mediante llamadas periódicas a toggleBuzzer().
+ *   - GPIO33 → Transistor/MOSFET de buzzer/alarma sonora. Controlado via LEDC
+ *     (PWM de audio) — genera una señal oscilatoria a frecuencia audible para
+ *     mover el parlante. La frecuencia varía para el efecto wail de sirena.
+ *     duty 50% = sonando, duty 0% = silencio. EN MODO SALIDA SECA: revertir
+ *     a gpio_set_level (ver TODO en mosfet_control.cpp initPwmBuzzer).
  *   - GPIO13 → MOSFET de corte de motor/alimentación: interrumpe el circuito
  *     de arranque de la moto. Nivel alto = corte activo. ACTUADOR DE ALTO RIESGO:
  *     si se activa accidentalmente, corta el motor mientras la moto está en marcha.
@@ -110,29 +112,48 @@ public:
      */
     static void init();
 
-    // ─── Control del buzzer ───────────────────────────────────────────────────
+    // ─── Control del buzzer (LEDC PWM — parlante via transistor) ─────────────
 
     /**
-     * @brief Activa o desactiva el buzzer/alarma sonora (GPIO33).
+     * @brief Activa o desactiva el buzzer vía LEDC PWM (GPIO33).
      *
      * PROPÓSITO:
-     *   Control directo del MOSFET del buzzer. Actualiza buzzerState y llama
-     *   gpio_set_level(). Registra un log WARN cuando se activa (estado anómalo)
-     *   y INFO cuando se desactiva.
+     *   Controla el duty cycle del canal LEDC: 50% = parlante sonando,
+     *   0% = silencio. No genera un nivel DC — oscila a la frecuencia
+     *   actual para que el parlante produzca sonido real.
      *
-     * @param active true para activar el buzzer (GPIO33 = HIGH), false para apagarlo.
+     * NOTA TEMPORAL:
+     *   Esta implementación usa LEDC para conducir un parlante via 2N2222.
+     *   Cuando se revierta a salida seca (relé/buzzer piezoeléctrico), cambiar
+     *   a gpio_set_level y restaurar la configuración GPIO en init().
+     *
+     * @param active true = duty 50% (sonando), false = duty 0% (silencio).
      */
     static void setBuzzer(bool active);
 
     /**
-     * @brief Alterna el estado actual del buzzer.
+     * @brief Cambia la frecuencia de la señal PWM del parlante.
      *
      * PROPÓSITO:
-     *   Invierte buzzerState y llama gpio_set_level() con el nuevo estado.
-     *   Útil para generar parpadeo de alarma desde control_task sin tener que
-     *   rastrear el estado actual en la tarea.
-     *   Se llama periódicamente (cada ~250ms) cuando el sistema está en ALERT
-     *   para producir el efecto sonoro intermitente.
+     *   Permite que control_task varíe la frecuencia tick a tick para
+     *   generar el efecto de wail (barrido de frecuencia) de una sirena real.
+     *   También se usa para diferenciar el tono de los beeps ARM/DISARM
+     *   del tono de la sirena de alerta.
+     *
+     * RANGO ÚTIL:
+     *   300–3000 Hz (audible en parlantes pequeños). El wail usa 800–1200 Hz.
+     *   Beeps de confirmación: 1100 Hz. Solo tiene efecto si buzzer está activo.
+     *
+     * @param freq_hz Frecuencia en Hz del canal LEDC.
+     */
+    static void setBuzzerFreq(uint32_t freq_hz);
+
+    /**
+     * @brief Alterna el estado actual del buzzer (duty 50% ↔ 0%).
+     *
+     * PROPÓSITO:
+     *   Útil para el patrón de beeps del ALERT suave — alterna el duty
+     *   sin cambiar la frecuencia ni reiniciar el timer LEDC.
      */
     static void toggleBuzzer();
 
@@ -228,13 +249,14 @@ public:
     static void applyLedPattern(uint32_t tick);
 
 private:
-    // Estado interno de cada salida. Siempre coherente con el nivel físico del GPIO.
-    // Se usan para evitar lecturas GPIO innecesarias en isBuzzerActive() y
-    // para que toggleBuzzer()/toggleLed1()/toggleLed2() sepan el estado actual.
     static bool buzzerState;
     static bool engineCutState;
     static bool led1State;
     static bool led2State;
+
+    // Configura LEDC timer + channel para GPIO33. Llamado desde init().
+    // Para revertir a salida seca: eliminar este método y la lógica LEDC en .cpp.
+    static void initPwmBuzzer();
 };
 
 

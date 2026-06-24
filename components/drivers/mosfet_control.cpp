@@ -55,7 +55,22 @@
 #include "pin_config.h"
 #include "system_flags.h"
 #include "driver/gpio.h"
+#include "driver/ledc.h"
 #include "esp_log.h"
+
+// ─── Constantes LEDC para el parlante (salida TEMPORAL — modo PWM de audio) ──
+// TODO: al revertir a salida seca (buzzer piezoeléctrico / relé), eliminar estas
+// constantes, quitar el include driver/ledc.h, restaurar PIN_MOSFET_BUZZER en
+// la máscara gpio_config de init(), y cambiar setBuzzer/toggleBuzzer/setBuzzerFreq
+// para usar gpio_set_level() nuevamente.
+// TIMER_1 / CHANNEL_1 — evita conflicto con LedManager (usa TIMER_0/CHANNEL_0).
+static constexpr ledc_timer_t   BUZZ_LEDC_TIMER   = LEDC_TIMER_1;
+static constexpr ledc_channel_t BUZZ_LEDC_CHANNEL = LEDC_CHANNEL_1;
+static constexpr ledc_mode_t    BUZZ_LEDC_SPEED   = LEDC_LOW_SPEED_MODE;
+static constexpr ledc_timer_bit_t BUZZ_DUTY_RES   = LEDC_TIMER_10_BIT; // 0–1023
+static constexpr uint32_t BUZZ_DUTY_ON   = 512;   // 50% duty → parlante oscila
+static constexpr uint32_t BUZZ_DUTY_OFF  = 0;     // silencio
+static constexpr uint32_t BUZZ_FREQ_BASE = 1000;  // Hz, frecuencia inicial
 
 static const char* TAG = "MosfetControl";
 
@@ -98,74 +113,119 @@ void MosfetControl::init() {
     gpio_config_t io_conf = {};
     io_conf.intr_type    = GPIO_INTR_DISABLE;
     io_conf.mode         = GPIO_MODE_OUTPUT;
-    // Máscara con todos los pines a configurar en una sola operación.
-    // Más eficiente que 4 llamadas a gpio_config() separadas.
-    io_conf.pin_bit_mask = (1ULL << PIN_MOSFET_BUZZER) |
-                           (1ULL << PIN_MOSFET_ENGINE) |
+    // PIN_MOSFET_BUZZER (GPIO33) NO está en esta máscara: lo configura LEDC en
+    // initPwmBuzzer(). Si se revierte a salida seca, agregar (1ULL << PIN_MOSFET_BUZZER)
+    // aquí y eliminar la llamada a initPwmBuzzer() al final.
+    io_conf.pin_bit_mask = (1ULL << PIN_MOSFET_ENGINE) |
                            (1ULL << PIN_LED_STATUS_1)  |
                            (1ULL << PIN_LED_STATUS_2);
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     io_conf.pull_up_en   = GPIO_PULLUP_DISABLE;
     gpio_config(&io_conf);
 
-    // Forzar nivel bajo en todos los pines inmediatamente después de configurar.
-    // Si el PCB no tiene resistencias pull-down externas en los gates de los MOSFETs,
-    // estos milisegundos entre power-on y esta línea son una ventana de riesgo.
-    gpio_set_level(PIN_MOSFET_BUZZER, 0);
     gpio_set_level(PIN_MOSFET_ENGINE, 0);
     gpio_set_level(PIN_LED_STATUS_1,  0);
     gpio_set_level(PIN_LED_STATUS_2,  0);
 
-    ESP_LOGI(TAG, "Salidas GPIO inicializadas (GPIO33 buzzer, GPIO13 motor, GPIO32/25 LEDs)");
+    // Inicializar LEDC PWM para el parlante. Deja GPIO33 con duty=0 (silencio).
+    initPwmBuzzer();
+
+    ESP_LOGI(TAG, "Salidas GPIO inicializadas (GPIO33 LEDC-PWM, GPIO13 motor, GPIO32/25 LEDs)");
 }
 
-// ─── Buzzer ───────────────────────────────────────────────────────────────────
+// ─── Buzzer (LEDC PWM — modo parlante temporal) ───────────────────────────────
 
 /**
- * @brief Activa o desactiva el buzzer de alarma.
+ * @brief Inicializa el periférico LEDC para generar PWM de audio en GPIO33.
  *
  * PROPÓSITO:
- *   Control directo del buzzer piezoeléctrico o bocina conectada al MOSFET en GPIO33.
- *   La activación queda registrada en el log de sistema (WARN por ser evento anómalo).
+ *   Configurar timer LEDC_TIMER_0 + canal LEDC_CHANNEL_0 en GPIO33 para
+ *   producir una señal oscilatoria que el parlante (via 2N2222) pueda reproducir.
+ *   Arranca con duty=0 (silencio). La frecuencia base es BUZZ_FREQ_BASE (1000 Hz).
  *
- * NOTA DE LOGGING:
- *   ESP_LOGW (warning) cuando se activa porque el buzzer sonando es siempre un
- *   evento que requiere atención (no debería activarse en operación normal).
- *   ESP_LOGI (info) cuando se desactiva porque es un retorno al estado normal.
+ * FLUJO:
+ *   ledc_timer_config()   → configura el timer con resolución 10-bit y freq base
+ *   ledc_channel_config() → asigna el canal al GPIO33, duty inicial = 0
+ *
+ * NOTA DE REVERSIÓN:
+ *   Para volver a salida seca: eliminar esta función, agregar GPIO33 a la
+ *   máscara gpio_config en init(), y restaurar gpio_set_level en setBuzzer/toggle.
+ */
+void MosfetControl::initPwmBuzzer() {
+    ledc_timer_config_t timer_conf = {};
+    timer_conf.speed_mode      = BUZZ_LEDC_SPEED;
+    timer_conf.timer_num       = BUZZ_LEDC_TIMER;
+    timer_conf.duty_resolution = BUZZ_DUTY_RES;
+    timer_conf.freq_hz         = BUZZ_FREQ_BASE;
+    timer_conf.clk_cfg         = LEDC_AUTO_CLK;
+    ledc_timer_config(&timer_conf);
+
+    ledc_channel_config_t chan_conf = {};
+    chan_conf.gpio_num   = PIN_MOSFET_BUZZER;
+    chan_conf.speed_mode = BUZZ_LEDC_SPEED;
+    chan_conf.channel    = BUZZ_LEDC_CHANNEL;
+    chan_conf.intr_type  = LEDC_INTR_DISABLE;
+    chan_conf.timer_sel  = BUZZ_LEDC_TIMER;
+    chan_conf.duty       = BUZZ_DUTY_OFF;
+    chan_conf.hpoint     = 0;
+    ledc_channel_config(&chan_conf);
+
+    ESP_LOGI(TAG, "LEDC buzzer iniciado (GPIO%d, %lu Hz, 10-bit)",
+             (int)PIN_MOSFET_BUZZER, (unsigned long)BUZZ_FREQ_BASE);
+}
+
+/**
+ * @brief Activa o desactiva el parlante via duty cycle LEDC.
+ *
+ * PROPÓSITO:
+ *   duty 50% (512/1023) → parlante oscila a la frecuencia actual → suena.
+ *   duty 0% → sin corriente alterna → silencio (transistor queda en corte).
+ *   No cambia la frecuencia — usa la que esté configurada (setBuzzerFreq o default).
  */
 void MosfetControl::setBuzzer(bool active) {
     buzzerState = active;
-    gpio_set_level(PIN_MOSFET_BUZZER, active ? 1 : 0);
+    uint32_t duty = active ? BUZZ_DUTY_ON : BUZZ_DUTY_OFF;
+    ledc_set_duty(BUZZ_LEDC_SPEED, BUZZ_LEDC_CHANNEL, duty);
+    ledc_update_duty(BUZZ_LEDC_SPEED, BUZZ_LEDC_CHANNEL);
     if (active) {
-        ESP_LOGW(TAG, "Buzzer ACTIVADO");
+        ESP_LOGW(TAG, "Buzzer ACTIVADO (PWM)");
     } else {
         ESP_LOGI(TAG, "Buzzer desactivado");
     }
 }
 
 /**
- * @brief Invierte el estado actual del buzzer.
+ * @brief Cambia la frecuencia del PWM del parlante.
  *
  * PROPÓSITO:
- *   Generar parpadeo de alarma sin que control_task tenga que rastrear el estado.
- *   Al llamar toggleBuzzer() periódicamente, el buzzer alterna ON/OFF creando
- *   el efecto de alarma intermitente característico del modo ALERT.
+ *   Control_task llama esto cada 250ms durante la sirena para barrer la
+ *   frecuencia entre WAIL_FREQ_LOW (800 Hz) y WAIL_FREQ_HIGH (1200 Hz),
+ *   produciendo el efecto wail característico de una sirena real.
+ *   También se llama con una frecuencia fija antes de los beeps ARM/DISARM.
  *
- * NOTA DE IMPLEMENTACIÓN:
- *   La inversión de buzzerState y la escritura GPIO son dos operaciones separadas.
- *   Si el sistema tuviera múltiples tareas llamando toggleBuzzer() simultáneamente,
- *   podría ocurrir una race condition (dos toggles consecutivos que se anulan).
- *   En Argus, solo control_task llama esta función, así que no hay riesgo.
+ * NOTA: ledc_set_freq modifica el registro del timer; el cambio es inmediato
+ *   en el siguiente ciclo PWM. No hay clic audible en el cambio de frecuencia
+ *   porque el duty cycle no se interrumpe.
+ */
+void MosfetControl::setBuzzerFreq(uint32_t freq_hz) {
+    ledc_set_freq(BUZZ_LEDC_SPEED, BUZZ_LEDC_TIMER, freq_hz);
+}
+
+/**
+ * @brief Alterna el duty cycle del parlante (50% ↔ 0%).
+ *
+ * PROPÓSITO:
+ *   Genera el patrón de beeps del ALERT suave (ON/OFF cada 2 ticks = 500ms).
+ *   No cambia la frecuencia — preserva la que esté activa.
  */
 void MosfetControl::toggleBuzzer() {
     buzzerState = !buzzerState;
-    gpio_set_level(PIN_MOSFET_BUZZER, buzzerState ? 1 : 0);
+    uint32_t duty = buzzerState ? BUZZ_DUTY_ON : BUZZ_DUTY_OFF;
+    ledc_set_duty(BUZZ_LEDC_SPEED, BUZZ_LEDC_CHANNEL, duty);
+    ledc_update_duty(BUZZ_LEDC_SPEED, BUZZ_LEDC_CHANNEL);
 }
 
 bool MosfetControl::isBuzzerActive() {
-    // Retorna el estado en memoria en lugar de leer el GPIO (evita un acceso al registro).
-    // buzzerState siempre es coherente con GPIO33 porque cada función que modifica
-    // el pin también actualiza esta variable.
     return buzzerState;
 }
 

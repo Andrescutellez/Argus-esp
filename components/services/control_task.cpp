@@ -252,19 +252,25 @@ static void stopAlertTimer() {
 }
 
 // ─── Flag de intensidad de buzzer ────────────────────────────────────────────────
-//
-// Separa el "modo de ALERT" del estado para poder aplicar dos patrones diferentes
-// de buzzer dentro del mismo estado STATE_ALERT. Solo se lee/escribe desde controlTask.
 
-/**
- * Indica si la alerta actual fue disparada por un evento severo.
- *   true  → buzzer ON continuo (sirena) al entrar en ALERT y se mantiene hasta salir.
- *   false → patrón de beeps: 2 ticks ON (500ms) de cada 8 ticks (2s de ciclo).
- *
- * Se asigna en applyStateEffects(STATE_ALERT) según el evento disparador.
- * Se resetea a false en applyStateEffects(STATE_IDLE).
- */
 static bool alertIsHard = false;
+
+// ─── Sirena wail (PWM de audio, modo temporal con parlante) ──────────────────
+//
+// Cuando s_sirenWailActive=true, el tick loop barre la frecuencia LEDC entre
+// WAIL_FREQ_LOW y WAIL_FREQ_HIGH creando el efecto "wee-woo" de sirena real.
+// Se activa al encender la sirena (alerta dura o SIREN_ON manual) y se apaga
+// al silenciarla. Los beeps de confirmación ARM/DISARM NO activan este flag:
+// usan BEEP_FREQ_HZ fijo para sonar como confirmación, no como alerta.
+//
+// TODO (salida seca): cuando se revierta a relé/buzzer piezoeléctrico, eliminar
+// s_sirenWailActive y los 3 WAIL_FREQ_* / BEEP_FREQ_HZ, y quitar el bloque
+// "Wail de sirena" del tick loop en controlTask().
+static bool s_sirenWailActive = false;
+
+static constexpr uint32_t WAIL_FREQ_LOW  = 800;   // Hz — tono bajo del wail
+static constexpr uint32_t WAIL_FREQ_HIGH = 1200;  // Hz — tono alto del wail
+static constexpr uint32_t BEEP_FREQ_HZ   = 1100;  // Hz — beeps ARM/DISARM y ALERT suave
 
 // Corte de motor preventivo activo — independiente del estado de la state machine.
 // Se activa con EVENT_ENGINE_CUT_SILENT o al entrar a STATE_PURSUIT.
@@ -354,10 +360,8 @@ static void applyStateEffects(SystemState_t newState, SystemState_t prevState,
     switch (newState) {
 
         case STATE_IDLE:
+            s_sirenWailActive = false;
             MosfetControl::setBuzzer(false);
-            // NO limpiar s_motorManualCut aquí: el app controla cuándo restaurar el motor
-            // vía CMD|ENGINE_RESTORE. Si limpiáramos en DISARM, el motor se restauraría
-            // aunque el usuario tuviera "restaurar al desarmar" desactivado.
             MosfetControl::setEngineCut(s_motorManualCut);
             stopMovingTimer();
             stopAlertTimer();
@@ -399,30 +403,31 @@ static void applyStateEffects(SystemState_t newState, SystemState_t prevState,
                            trigger.event == EVENT_IMPACT_DETECTED ||
                            trigger.event == EVENT_TRIGGER_ALERT_CMD);
 
-            // En modo geocerca el buzzer queda silencioso: el backend evalúa si la
-            // moto salió de la zona y sólo entonces manda CMD|PARK_MODE_OFF + SIREN_ON.
             if (!flagParkMode) {
                 if (alertIsHard) {
+                    // Sirena: activa wail y arranca en la frecuencia baja del barrido.
+                    s_sirenWailActive = true;
+                    MosfetControl::setBuzzerFreq(WAIL_FREQ_LOW);
                     MosfetControl::setBuzzer(true);
-                    ESP_LOGW(TAG, "ALERT fuerte → sirena continua activada");
+                    ESP_LOGW(TAG, "ALERT fuerte → sirena wail activada");
                 } else {
+                    // Beeps suaves: frecuencia fija, sin wail.
+                    s_sirenWailActive = false;
+                    MosfetControl::setBuzzerFreq(BEEP_FREQ_HZ);
                     MosfetControl::setBuzzer(false);  // tick aplicará patrón de beeps
                     ESP_LOGW(TAG, "ALERT suave → patrón de beeps activado");
                 }
             } else {
+                s_sirenWailActive = false;
                 MosfetControl::setBuzzer(false);
-                ESP_LOGI(TAG, "ALERT en geocerca → buzzer silenciado, esperando evaluación backend");
+                ESP_LOGI(TAG, "ALERT en geocerca → buzzer silenciado");
             }
             break;
 
         case STATE_PURSUIT:
-            // Sin sirena automática: usar CMD|SIREN_ON explícito.
-            // Razón: la sirena puede alertar al ladrón de que fue localizado → tira el GPS.
-            // Sin corte de motor automático: usar CMD|ENGINE_CUT (diferido hasta quietud).
-            // Razón: cortar el motor en movimiento puede causar accidente mortal.
-            // El corte y la sirena deben ser decisiones explícitas del operador/propietario.
-            // setBuzzer(false): apaga la sirena si venía de STATE_ALERT (alertIsHard=true).
-            // El buzzer no se limpia en el tick cuando !STATE_ALERT, así que hay que apagarlo aquí.
+            // Sin sirena automática ni corte motor: decisión explícita del operador.
+            // Apagar wail si venía de STATE_ALERT con alertIsHard=true.
+            s_sirenWailActive = false;
             MosfetControl::setBuzzer(false);
             MosfetControl::setEngineCut(s_motorManualCut);  // conservar corte si ya estaba activo
             stopMovingTimer();
@@ -520,10 +525,13 @@ void controlTask(void* pvParameters) {
             // Solo enciende/apaga el buzzer sin afectar estado, timers ni motorCut.
             // Uso: localizar la moto a distancia (bocina de búsqueda).
             } else if (msg.event == EVENT_SIREN_ON) {
+                s_sirenWailActive = true;
+                MosfetControl::setBuzzerFreq(WAIL_FREQ_LOW);
                 MosfetControl::setBuzzer(true);
-                ESP_LOGI(TAG, "[SIREN] Sirena manual ON (estado: %s)",
+                ESP_LOGI(TAG, "[SIREN] Sirena manual ON — wail activo (estado: %s)",
                          StateMachine::stateName(stateMachine.getState()));
             } else if (msg.event == EVENT_SIREN_OFF) {
+                s_sirenWailActive = false;
                 MosfetControl::setBuzzer(false);
                 ESP_LOGI(TAG, "[SIREN] Sirena manual OFF (estado: %s)",
                          StateMachine::stateName(stateMachine.getState()));
@@ -576,10 +584,10 @@ void controlTask(void* pvParameters) {
                         bleNotifyState(systemArmed);
 
                         // Confirmación auditiva: 1 beep al armar, 2 beeps al desarmar.
-                        // Dispara la secuencia; el tick de 250ms la ejecuta paso a paso.
-                        // No bloqueante: el loop principal continúa sin delay.
                         beepStep = 0;
                         beepMax  = (msg.event == EVENT_ARM_CMD) ? 2U : 4U;
+                        // Frecuencia fija para beeps — distinta al wail de alerta.
+                        MosfetControl::setBuzzerFreq(BEEP_FREQ_HZ);
                         ESP_LOGI(TAG, "Beep ARM/DISARM: %u steps programados", beepMax);
                     }
                 }
@@ -675,6 +683,19 @@ void controlTask(void* pvParameters) {
                 MosfetControl::setBuzzer(false);
                 beepMax = 0;  // Secuencia completada — buzzer queda apagado
             }
+        }
+
+        // ── Wail de sirena: barrido de frecuencia 800→1200→800 Hz ────────────────
+        // 16 ticks × 250ms = 4s por ciclo completo. Sube 8 ticks y baja 8 ticks.
+        // Solo activo cuando el parlante está encendido con wail (no beeps ni silencio).
+        // setBuzzerFreq no interrumpe el duty cycle — el cambio es continuo y sin click.
+        // TODO (salida seca): eliminar este bloque cuando se revierta a gpio_set_level.
+        if (s_sirenWailActive) {
+            uint32_t phase = ledTick % 16;
+            uint32_t freq  = (phase < 8)
+                ? (WAIL_FREQ_LOW  + phase * 50)          // sube: 800→1150 Hz
+                : (WAIL_FREQ_HIGH - (phase - 8) * 50);   // baja: 1200→850 Hz
+            MosfetControl::setBuzzerFreq(freq);
         }
 
         ledTick++;
