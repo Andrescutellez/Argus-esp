@@ -421,6 +421,9 @@ static void applyStateEffects(SystemState_t newState, SystemState_t prevState,
             // Sin corte de motor automático: usar CMD|ENGINE_CUT (diferido hasta quietud).
             // Razón: cortar el motor en movimiento puede causar accidente mortal.
             // El corte y la sirena deben ser decisiones explícitas del operador/propietario.
+            // setBuzzer(false): apaga la sirena si venía de STATE_ALERT (alertIsHard=true).
+            // El buzzer no se limpia en el tick cuando !STATE_ALERT, así que hay que apagarlo aquí.
+            MosfetControl::setBuzzer(false);
             MosfetControl::setEngineCut(s_motorManualCut);  // conservar corte si ya estaba activo
             stopMovingTimer();
             stopAlertTimer();

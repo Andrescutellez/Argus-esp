@@ -239,12 +239,12 @@ bool StateMachine::handleIdle(const EventMessage_t& msg) {
             return true;
 
         case EVENT_PURSUIT_CONFIRM:
-            // Corte de motor manual enviado por el propietario desde la app.
-            // Se acepta en IDLE porque el propietario puede querer bloquear la moto
-            // preventivamente, sin esperar a que haya alarma activa.
-            // El auto-corte automático está controlado en la app (solo se llama
-            // cuando hay STATE_ALERT), así que este path solo ocurre por acción manual.
-            ESP_LOGE(TAG, "Corte de motor manual en IDLE → activando PURSUIT");
+            // Robo confirmado por propietario u operador → activar rastreo silencioso.
+            // Se acepta en IDLE (robo sin alarma previa: dispositivo desarmado o ladrón
+            // rápido) o desde STATE_ALERT (escalada desde alerta activa).
+            // NO activa sirena ni corte de motor — ambas son decisiones explícitas del
+            // operador/propietario para no alertar al ladrón de que tiene GPS.
+            ESP_LOGE(TAG, "Robo CONFIRMADO desde IDLE → activando PURSUIT (GPS 10s, sin sirena ni motor)");
             transitionTo(STATE_PURSUIT);
             return true;
 
